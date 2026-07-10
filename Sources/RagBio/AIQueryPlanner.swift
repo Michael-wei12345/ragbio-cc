@@ -288,11 +288,20 @@ struct AIQueryPlanner {
         full-text excerpts. Do not speculate and do not use outside knowledge. For each key \
         conclusion, cite the source section/paragraph — each excerpt is prefixed with a locator such \
         as "[Methods · 第 9 段]". If something is not reported in the excerpts, write "Not reported". \
-        Keep the whole note between 250 and 450 words. Write in English. Do not use curly braces \
-        anywhere inside the note text.
+        Write in English. Do not use curly braces anywhere inside the note text.
 
-        Use exactly this structure and keep the numbered headers:
+        Begin the note with ONE prominent line, exactly in this form:
+        Screening verdict: <Include as primary evidence | Include as background | Maybe | Exclude> — <one short reason>
 
+        Adapt the depth to the study type. If the paper is a narrative review, systematic review, or \
+        meta-analysis, or otherwise reports no primary dataset, keep sections 3–6 short: one brief line \
+        each noting that primary methods/data are not applicable, instead of repeating "Not reported" \
+        many times. Do the full detailed extraction only for primary studies. Length: about 250–450 \
+        words for primary studies, and shorter (about 150–250 words) for reviews.
+
+        Use exactly this structure and keep the headers:
+
+        Screening verdict: ...
         1. One-line takeaway:
         2. Study type and role in my review:
         (Say whether it is a primary study, RCT, cohort, case-control, cross-sectional, systematic \

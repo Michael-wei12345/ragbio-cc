@@ -231,62 +231,6 @@ enum FullTextSource: String, Codable, Hashable {
     }
 }
 
-struct LibraryItem: Identifiable, Codable, Hashable {
-    let id: UUID
-    var title: String
-    let originalFileName: String
-    let storedFileName: String
-    let contentHash: String?
-    let addedAt: Date
-    var modifiedAt: Date
-    var tags: [String]
-    let pageCount: Int
-    let wordCount: Int
-    let paragraphCount: Int
-    let sourceWorkID: String?
-    let sourceURL: String?
-    let authors: String?
-    let venue: String?
-    let publicationYear: Int?
-
-    var isOnlineFavorite: Bool {
-        sourceWorkID != nil
-    }
-
-    var isPDFBacked: Bool {
-        !storedFileName.isEmpty
-    }
-
-    var isURLReference: Bool {
-        !isOnlineFavorite && !isPDFBacked && sourceURL != nil
-    }
-
-    var opensSourceURL: Bool {
-        isOnlineFavorite || isURLReference
-    }
-
-    var libraryKindTitle: String {
-        if isOnlineFavorite { return "在线收藏" }
-        if isURLReference { return "URL 导入" }
-        return "本地 PDF"
-    }
-}
-
-struct LibraryPassageHit: Identifiable, Hashable {
-    let item: LibraryItem
-    let passage: PassageHit
-
-    var id: String {
-        "\(item.id.uuidString)-\(passage.id)"
-    }
-}
-
-enum LibraryImportState: Equatable {
-    case idle
-    case importing(completed: Int, total: Int)
-    case failed(String)
-}
-
 struct FullTextParagraph: Identifiable, Codable, Hashable {
     let id: String
     let section: String

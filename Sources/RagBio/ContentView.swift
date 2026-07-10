@@ -4,12 +4,6 @@ import Translation
 
 struct ContentView: View {
     @ObservedObject var store: SearchStore
-    @ObservedObject var libraryStore: LibraryStore
-
-    init(store: SearchStore, libraryStore: LibraryStore) {
-        self.store = store
-        self.libraryStore = libraryStore
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -42,7 +36,7 @@ struct ContentView: View {
             HSplitView {
                 SidebarView(store: store)
                     .frame(minWidth: 310, idealWidth: 390, maxWidth: 460, maxHeight: .infinity)
-                DetailPane(store: store, libraryStore: libraryStore)
+                DetailPane(store: store)
                     .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -777,11 +771,10 @@ private struct ScanDecisionControl: View {
 
 private struct DetailPane: View {
     @ObservedObject var store: SearchStore
-    @ObservedObject var libraryStore: LibraryStore
 
     var body: some View {
         if let work = store.selectedWork {
-            WorkDetail(work: work, store: store, libraryStore: libraryStore)
+            WorkDetail(work: work, store: store)
                 .id(work.id)
         } else if !store.works.isEmpty {
             EmptyStateView(
@@ -834,7 +827,6 @@ private struct FeatureLabel: View {
 private struct WorkDetail: View {
     let work: Work
     @ObservedObject var store: SearchStore
-    @ObservedObject var libraryStore: LibraryStore
     @State private var selectedTab = 0
     @State private var translationError: String?
 
@@ -1043,13 +1035,6 @@ private struct WorkDetail: View {
             return translatedTitle
         }
         return work.title
-    }
-
-    private var favoriteButtonTitle: String {
-        guard let date = libraryStore.favoriteDate(workID: work.id) else {
-            return "收藏"
-        }
-        return "已收藏 \(date.formatted(.dateTime.hour().minute()))"
     }
 
     @ViewBuilder
@@ -1847,169 +1832,46 @@ private struct ArticleSummaryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text(note)
-                .font(.callout)
-                .lineSpacing(5)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(Array(note.components(separatedBy: "\n").enumerated()), id: \.offset) { _, raw in
+                    lineView(raw.trimmingCharacters(in: .whitespaces))
+                }
+            }
+            .textSelection(.enabled)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     }
-}
 
-private struct LiteratureReviewSummaryCard: View {
-    let summary: LiteratureReviewSummary
-    let sourceLabel: String
-    let sourceExcerpts: [LiteratureReviewSourceExcerpt]
-    let onOpenSourceExcerpt: (LiteratureReviewSourceExcerpt) -> Void
-
-    var body: some View {
-        let sourceByLabel = Dictionary(
-            sourceExcerpts.map { ($0.label, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label("Literature Review Summary", systemImage: "doc.text.magnifyingglass")
-                    .font(.headline)
-                Spacer()
-                Text(sourceLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            SummaryRow(
-                title: "Topic",
-                text: summary.topic,
-                sourceExcerpt: sourceByLabel["Topic"],
-                onOpenSourceExcerpt: onOpenSourceExcerpt
-            )
-            SummaryRow(
-                title: "Methods",
-                text: summary.methods,
-                sourceExcerpt: sourceByLabel["Methods"],
-                onOpenSourceExcerpt: onOpenSourceExcerpt
-            )
-            SummaryRow(
-                title: "Results",
-                text: summary.results,
-                sourceExcerpt: sourceByLabel["Results"],
-                onOpenSourceExcerpt: onOpenSourceExcerpt
-            )
-
-            if !summary.metrics.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Key Metrics")
-                        .font(.caption.bold())
-                        .foregroundStyle(.secondary)
-                    ForEach(summary.metrics, id: \.self) { metric in
-                        HStack(alignment: .top, spacing: 6) {
-                            Text("•")
-                                .foregroundStyle(.tint)
-                            Text(metric)
-                                .textSelection(.enabled)
-                        }
-                        .font(.callout)
-                    }
-                    if let excerpt = sourceByLabel["Key Metrics"] {
-                        SourceLocatorButton(
-                            excerpt: excerpt,
-                            onOpenSourceExcerpt: onOpenSourceExcerpt
-                        )
-                    }
-                }
-            }
-
-            SummaryRow(
-                title: "Outlook",
-                text: summary.outlook,
-                sourceExcerpt: sourceByLabel["Outlook"],
-                onOpenSourceExcerpt: onOpenSourceExcerpt
-            )
-
-            if !sourceExcerpts.isEmpty {
-                Divider()
-                DisclosureGroup {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(sourceExcerpts) { excerpt in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text("\(excerpt.label) · \(excerpt.locator)")
-                                        .font(.caption.bold())
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Button("Locate") {
-                                        onOpenSourceExcerpt(excerpt)
-                                    }
-                                    .font(.caption)
-                                    .buttonStyle(.borderless)
-                                }
-                                Text(excerpt.text)
-                                    .font(.caption)
-                                    .lineSpacing(2)
-                                    .textSelection(.enabled)
-                            }
-                            .padding(.vertical, 2)
-                        }
-                    }
-                    .padding(.top, 6)
-                } label: {
-                    Label("Source passages used", systemImage: "quote.bubble")
-                        .font(.caption.bold())
-                }
-            }
-        }
-        .padding(16)
-        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.primary.opacity(0.08))
-        )
-    }
-
-    private struct SummaryRow: View {
-        let title: String
-        let text: String
-        let sourceExcerpt: LiteratureReviewSourceExcerpt?
-        let onOpenSourceExcerpt: (LiteratureReviewSourceExcerpt) -> Void
-
-        var body: some View {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-                Text(text)
-                    .font(.callout)
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
-                if let sourceExcerpt {
-                    SourceLocatorButton(
-                        excerpt: sourceExcerpt,
-                        onOpenSourceExcerpt: onOpenSourceExcerpt
-                    )
-                }
-            }
-        }
-    }
-
-    private struct SourceLocatorButton: View {
-        let excerpt: LiteratureReviewSourceExcerpt
-        let onOpenSourceExcerpt: (LiteratureReviewSourceExcerpt) -> Void
-
-        var body: some View {
-            HStack(spacing: 6) {
-                Image(systemName: "quote.bubble")
-                Text("Source: \(excerpt.locator)")
-                    .lineLimit(1)
-                Button("Locate") {
-                    onOpenSourceExcerpt(excerpt)
-                }
-                .buttonStyle(.borderless)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+    @ViewBuilder
+    private func lineView(_ line: String) -> some View {
+        if line.isEmpty {
+            Color.clear.frame(height: 3)
+        } else if line.lowercased().hasPrefix("screening verdict") {
+            Text(line)
+                .font(.callout.bold())
+                .foregroundStyle(.tint)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.bottom, 4)
+        } else if line.range(of: #"^\d+\.\s"#, options: .regularExpression) != nil {
+            Text(line)
+                .font(.callout.bold())
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 4)
+        } else if line.hasPrefix("-") {
+            Text(line)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 12)
+        } else {
+            Text(line)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
