@@ -1,5 +1,27 @@
 # RagBio Development Log
 
+## 2026-07-09 - Backend dead-code cleanup: remove the Library subsystem and the dead summary card
+
+Status: Success; app verified running.
+
+### Goal
+
+Remove dead code left behind by the redesign (no reachable UI), while keeping everything the field summary and Article Summary still reuse.
+
+### Changes
+
+- Deleted the whole local-library subsystem: `LibraryView.swift`, `LibraryStore.swift`, `LibraryService.swift` (~1150 lines); the `LibraryItem` / `LibraryPassageHit` / `LibraryImportState` models; the `libraryStore` threading through `RagBioApp` / `ContentView` / `DetailPane` / `WorkDetail`; the dead `favoriteButtonTitle`; and the "导入 PDF 到文库" menu command. (Online full-text "import PDF" is unaffected — it routes through `SearchStore.importPDF`.)
+- Deleted the dead `LiteratureReviewSummaryCard` view cluster (~150 lines) — the per-paper display was replaced by `ArticleSummaryView`. Kept `LiteratureReviewSummaryStatusCard` (still used) and `literatureReviewSourceExcerpts` / `LiteratureReviewCitationBuilder` (still reused to build the field summary's source refs).
+
+### Left in place on purpose
+
+- `currentEvidenceTable` / `currentFieldScanReport` state + their session/project persistence fields: woven into `OnlineSearchProjectStore`'s saved-project format, so removing them risks existing saved projects for no user benefit.
+- The dead `SearchStore` Evidence Table / Field Scan methods (`generateEvidenceTable`, exports, `generateFieldScanReport`) + `EvidenceTableService.make/markdown/csv` + `FieldScanService.generate(table:)`: entangled with the reused `rows(for:)` / `generate(rows:)` path. Left for a possible focused follow-up.
+
+### Verification
+
+- `swift build` + `scripts/build-app.sh` passed; app relaunched and runs.
+
 ## 2026-07-09 - Per-paper "Article Summary" (systematic-review extraction note)
 
 Status: Success (builds); AI output quality pending user test.
@@ -23,6 +45,11 @@ Replace the displayed per-paper "Literature Review Summary" with the user's syst
 ### Verification
 
 - `swift build` + `scripts/build-app.sh` passed. AI output quality pending user test.
+
+### Follow-up: screening verdict + adaptive depth + formatted rendering
+
+- Prompt: the note now begins with a prominent `Screening verdict: <Include as primary evidence | Include as background | Maybe | Exclude> — reason` line, and adapts depth — reviews/meta-analyses get a shorter treatment (no repeated "Not reported" walls) while primary studies get the full extraction.
+- `ArticleSummaryView`: renders line-by-line — the screening verdict as a highlighted tinted box, numbered section headers bold, bullets indented — so it is scannable instead of a plain text wall. Builds pass.
 
 ## 2026-07-09 - Make the field summary concise; drop the Use-only generate button
 
