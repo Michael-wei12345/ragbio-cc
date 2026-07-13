@@ -131,4 +131,107 @@ import Testing
         let restored = try await store.loadRecord(id: record.id)
         #expect(restored == record)
     }
+
+    @Test func rebuildIgnoresValidDeletedTombstone() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        try await store.bootstrap()
+        let record = makeRecord(query: "gut", works: [makeWork()], date: Date())
+        _ = try await store.save(record)
+        let recordURL = root.appendingPathComponent("records/\(record.id.uuidString).json")
+        let tombstoneURL = root.appendingPathComponent("records/\(record.id.uuidString).deleted")
+        try FileManager.default.moveItem(at: recordURL, to: tombstoneURL)
+        try Data("broken".utf8).write(to: root.appendingPathComponent("index.json"))
+
+        let rebuilt = try await store.loadIndex()
+
+        #expect(rebuilt.summaries.isEmpty)
+    }
+
+    @Test func saveRejectsDifferentIdentityForExistingNormalizedQuery() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        try await store.bootstrap()
+        let original = makeRecord(query: "Gut  Microbiota", works: [makeWork()], date: Date())
+        let conflict = makeRecord(
+            query: "gut microbiota",
+            works: [makeWork(id: "https://openalex.org/W2")],
+            date: Date().addingTimeInterval(1)
+        )
+        _ = try await store.save(original)
+
+        var message: String?
+        do {
+            _ = try await store.save(conflict)
+        } catch {
+            message = error.localizedDescription
+        }
+
+        #expect(message == "A different search history already uses this normalized query.")
+        let index = try await store.loadIndex()
+        #expect(index.summaries.map(\.id) == [original.id])
+        #expect(try await store.loadRecord(id: original.id) == original)
+    }
+
+    @Test func failedRecordTombstoneLeavesIndexAndRecordIntact() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let records = root.appendingPathComponent("records")
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        try await store.bootstrap()
+        let record = makeRecord(query: "gut", works: [makeWork()], date: Date())
+        _ = try await store.save(record)
+        try setPermissions(0o500, at: records)
+
+        var didThrow = false
+        do {
+            _ = try await store.delete(id: record.id)
+        } catch {
+            didThrow = true
+        }
+        try setPermissions(0o700, at: records)
+
+        #expect(didThrow)
+        #expect(try await store.loadIndex().summaries.map(\.id) == [record.id])
+        #expect(try await store.loadRecord(id: record.id) == record)
+    }
+
+    @Test func failedLegacyDeletionDoesNotWriteResetMarker() async throws {
+        let root = try makeTemporaryDirectory()
+        let legacy = root.appendingPathComponent("SearchSession")
+        let projects = legacy.appendingPathComponent("Projects")
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        try Data("project".utf8).write(to: projects.appendingPathComponent("index.json"))
+        try setPermissions(0o500, at: legacy)
+        let store = SearchHistoryStore(root: historyRoot, legacyRoot: legacy)
+
+        var didThrow = false
+        do {
+            try await store.bootstrap()
+        } catch {
+            didThrow = true
+        }
+
+        #expect(didThrow)
+        #expect(!FileManager.default.fileExists(atPath: historyRoot.appendingPathComponent(".legacy-reset-v1").path))
+        try setPermissions(0o700, at: legacy)
+        try await store.bootstrap()
+        #expect(!FileManager.default.fileExists(atPath: projects.path))
+    }
+}
+
+private func setPermissions(_ permissions: Int, at url: URL) throws {
+    try FileManager.default.setAttributes(
+        [.posixPermissions: NSNumber(value: permissions)],
+        ofItemAtPath: url.path
+    )
 }
