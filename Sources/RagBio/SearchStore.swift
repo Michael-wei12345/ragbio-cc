@@ -9,7 +9,7 @@ final class SearchStore: ObservableObject {
     @Published var searchMode: SearchMode = .keyword {
         didSet {
             guard searchMode != oldValue else { return }
-            searchGeneration &+= 1
+            advanceSearchGeneration()
             isLoading = false
             errorMessage = nil
             if searchMode == .keyword {
@@ -98,6 +98,8 @@ final class SearchStore: ObservableObject {
     private var searchGeneration = 0
     private var corpusAnalysisGeneration = 0
     private var historyRevision = 0
+    private var historyMutationToken = SearchHistoryMutationToken()
+    private var historyRefreshFallbackRecord: SearchHistoryRecord?
     let pageSize = 20
     private let aiCandidateLimit = 50
     private let aiCandidatePageSize = 50
@@ -136,40 +138,58 @@ final class SearchStore: ObservableObject {
     }
 
     func loadInitialHistory() async {
+        let generation = searchGeneration
         do {
             try await historyStore.bootstrap()
+            guard generation == searchGeneration else { return }
             let index = try await historyStore.loadIndex()
+            guard generation == searchGeneration else { return }
             historySummaries = index.summaries
             guard let id = index.lastOpenedHistoryID else { return }
             await openHistory(id)
         } catch {
+            guard generation == searchGeneration else { return }
             historyErrorMessage = error.localizedDescription
         }
     }
 
     func openHistory(_ id: UUID) async {
         invalidateAsyncWork()
+        historyRefreshFallbackRecord = nil
         isLoading = false
         isRefreshingHistory = false
+        var openGeneration = searchGeneration
         do {
             let record = try await historyStore.loadRecord(id: id)
+            guard openGeneration == searchGeneration else { return }
             restoreHistoryRecord(record)
+            openGeneration = searchGeneration
             let index = try await historyStore.setLastOpened(id)
+            guard openGeneration == searchGeneration,
+                  currentHistoryID == id else { return }
             historySummaries = index.summaries
             historyErrorMessage = nil
         } catch {
+            guard openGeneration == searchGeneration else { return }
             historyErrorMessage = error.localizedDescription
         }
     }
 
     func deleteHistory(_ id: UUID) async {
+        let deletingCurrent = currentHistoryID == id
+        if deletingCurrent {
+            invalidateAsyncWork()
+        }
+        let deleteGeneration = searchGeneration
         do {
             let index = try await historyStore.delete(id: id)
+            guard deleteGeneration == searchGeneration else { return }
             historySummaries = index.summaries
             guard currentHistoryID == id else { return }
-            clearVisibleSearch()
+            clearVisibleSearch(invalidateAsync: false)
             historyErrorMessage = nil
         } catch {
+            guard deleteGeneration == searchGeneration else { return }
             historyErrorMessage = error.localizedDescription
         }
     }
@@ -285,15 +305,21 @@ final class SearchStore: ObservableObject {
     private func invalidateAsyncWork() {
         aiEnhancementTask?.cancel()
         aiEnhancementTask = nil
-        searchGeneration &+= 1
+        advanceSearchGeneration()
         corpusAnalysisGeneration &+= 1
+    }
+
+    private func advanceSearchGeneration() {
+        historyMutationToken.invalidate()
+        historyMutationToken = SearchHistoryMutationToken()
+        searchGeneration &+= 1
     }
 
     @discardableResult
     func beginHistorySearch(displayQuery: String) async -> Int {
         aiEnhancementTask?.cancel()
         aiEnhancementTask = nil
-        searchGeneration &+= 1
+        advanceSearchGeneration()
         let generation = searchGeneration
         let normalized = SearchQueryIdentity.normalize(displayQuery)
         let prior: SearchHistoryRecord?
@@ -303,13 +329,14 @@ final class SearchStore: ObservableObject {
             prior = try? await historyStore.record(normalizedQuery: normalized)
         }
         guard generation == searchGeneration else { return generation }
+        historyRefreshFallbackRecord = prior
         if let prior {
             restoreHistoryRecord(prior)
             query = displayQuery
             isRefreshingHistory = true
         } else {
-            isRefreshingHistory = false
-            clearSearchResultsForDifferentQuery()
+            query = displayQuery
+            clearVisibleSearch(invalidateAsync: false, clearQuery: false)
         }
         errorMessage = nil
         historyErrorMessage = nil
@@ -320,28 +347,6 @@ final class SearchStore: ObservableObject {
         generation == searchGeneration
     }
 
-    private func clearSearchResultsForDifferentQuery() {
-        currentHistoryID = nil
-        currentHistoryRecord = nil
-        works = []
-        aiRankedWorks = []
-        totalCount = 0
-        currentPage = 1
-        selection = nil
-        evidence = []
-        scanDecisions = [:]
-        currentEvidenceTable = nil
-        currentFieldScanReport = nil
-        lastAIPlan = nil
-        aiReasons = [:]
-        aiScores = [:]
-        aiEvidenceLevels = [:]
-        aiSearchNotice = nil
-        pubMedNotice = nil
-        fullTextReviewSummaries = [:]
-        articleSummaries = [:]
-    }
-
     private func finishHistorySearchFailure(
         generation: Int,
         message: String?,
@@ -350,12 +355,20 @@ final class SearchStore: ObservableObject {
         guard generation == searchGeneration else { return }
         isLoading = false
         isRefreshingHistory = false
+        historyRefreshFallbackRecord = nil
         if !cancelled { errorMessage = message }
     }
 
-    private func clearVisibleSearch() {
-        invalidateAsyncWork()
-        query = ""
+    private func clearVisibleSearch(
+        invalidateAsync: Bool = true,
+        clearQuery: Bool = true
+    ) {
+        if invalidateAsync {
+            invalidateAsyncWork()
+        }
+        if clearQuery {
+            query = ""
+        }
         works = []
         aiRankedWorks = []
         totalCount = 0
@@ -405,6 +418,7 @@ final class SearchStore: ObservableObject {
         fieldSummaryError = nil
         currentHistoryID = nil
         currentHistoryRecord = nil
+        historyRefreshFallbackRecord = nil
         historyRevision = 0
         isRefreshingHistory = false
         decisionFilter = .all
@@ -451,33 +465,36 @@ final class SearchStore: ObservableObject {
     ) async {
         guard generation == searchGeneration, !aiRankedWorks.isEmpty else { return }
         let normalized = SearchQueryIdentity.normalize(displayQuery)
+        let mutationToken = historyMutationToken
+        let snapshot = makeHistorySnapshot(
+            displayQuery: displayQuery,
+            revision: historyRevision + 1
+        )
         do {
-            let prior = try await historyStore.record(normalizedQuery: normalized)
-            guard generation == searchGeneration else { return }
-            historyRevision = max(historyRevision, prior?.snapshot.revision ?? 0) + 1
-            let record = SearchHistoryRecord(
-                schemaVersion: SearchHistoryRecord.currentSchemaVersion,
-                id: prior?.id ?? UUID(),
+            let result = try await historyStore.saveFirstUsableStage(
                 displayQuery: displayQuery,
                 normalizedQuery: normalized,
-                createdAt: prior?.createdAt ?? startedAt,
-                lastSuccessfulSearchAt: Date(),
-                snapshot: makeHistorySnapshot(
-                    displayQuery: displayQuery,
-                    revision: historyRevision
-                ),
-                useLedger: prior?.useLedger ?? UseLedger()
+                startedAt: startedAt,
+                completedAt: Date(),
+                snapshot: snapshot,
+                mutationToken: mutationToken
             )
-            let index = try await historyStore.save(record)
-            guard generation == searchGeneration else { return }
-            currentHistoryID = record.id
-            currentHistoryRecord = record
-            historySummaries = index.summaries
+            guard generation == searchGeneration,
+                  mutationToken.isValid else { return }
+            historyRevision = result.record.snapshot.revision
+            currentHistoryID = result.record.id
+            currentHistoryRecord = result.record
+            historySummaries = result.index.summaries
             isRefreshingHistory = false
-            applyUseLedgerToVisibleWorks(record.useLedger)
+            historyRefreshFallbackRecord = nil
+            applyUseLedgerToVisibleWorks(result.record.useLedger)
         } catch {
-            guard generation == searchGeneration else { return }
-            if let old = currentHistoryRecord { restoreHistoryRecord(old) }
+            guard generation == searchGeneration,
+                  mutationToken.isValid else { return }
+            if let old = historyRefreshFallbackRecord {
+                restoreHistoryRecord(old)
+            }
+            historyRefreshFallbackRecord = nil
             historyErrorMessage = "Search completed, but history could not be saved."
             isRefreshingHistory = false
         }
@@ -489,17 +506,23 @@ final class SearchStore: ObservableObject {
     ) async {
         guard expectedGeneration == searchGeneration,
               let historyID = currentHistoryID else { return }
+        let mutationToken = historyMutationToken
         do {
             let record = try await historyStore.updateSnapshot(
                 historyID: historyID,
-                snapshot: snapshot
+                snapshot: snapshot,
+                mutationToken: mutationToken
             )
-            guard expectedGeneration == searchGeneration else { return }
-            currentHistoryRecord = record
+            guard expectedGeneration == searchGeneration,
+                  mutationToken.isValid else { return }
             let index = try await historyStore.loadIndex()
+            guard expectedGeneration == searchGeneration,
+                  mutationToken.isValid else { return }
+            currentHistoryRecord = record
             historySummaries = index.summaries
         } catch {
-            guard expectedGeneration == searchGeneration else { return }
+            guard expectedGeneration == searchGeneration,
+                  mutationToken.isValid else { return }
             historyErrorMessage = "Search completed, but history could not be saved."
         }
     }
@@ -863,7 +886,7 @@ final class SearchStore: ObservableObject {
             guard !openAlexQuery.isEmpty else { return }
             aiEnhancementTask?.cancel()
             aiEnhancementTask = nil
-            searchGeneration &+= 1
+            advanceSearchGeneration()
             let generation = searchGeneration
             let searchStartedAt = Date()
             searchTimingSummary = nil
@@ -935,11 +958,6 @@ final class SearchStore: ObservableObject {
             )
             try ensureSearchIsActive(generation, mode: .ai)
             let candidates = candidateResult.works
-            guard !candidates.isEmpty else {
-                throw AISearchPipelineError.candidateFetch(
-                    "OpenAlex 和 PubMed 都没有返回候选论文"
-                )
-            }
             let candidateSeconds = elapsedSeconds(since: candidateStartedAt)
 
             lastAIPlan = plan

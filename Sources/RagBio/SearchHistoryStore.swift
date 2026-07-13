@@ -14,6 +14,23 @@ enum SearchHistoryStoreError: LocalizedError {
     }
 }
 
+final class SearchHistoryMutationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var valid = true
+
+    func invalidate() {
+        lock.lock()
+        valid = false
+        lock.unlock()
+    }
+
+    var isValid: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return valid
+    }
+}
+
 actor SearchHistoryStore {
     private let root: URL
     private let records: URL
@@ -22,8 +39,14 @@ actor SearchHistoryStore {
     private let legacyRoot: URL
     private let encoder: JSONEncoder
     private let decoder = JSONDecoder()
+    // ponytail: zero in the app; nonzero only makes invalidation races deterministic in tests.
+    private let persistenceDelay: Duration
 
-    init(root customRoot: URL? = nil, legacyRoot customLegacyRoot: URL? = nil) {
+    init(
+        root customRoot: URL? = nil,
+        legacyRoot customLegacyRoot: URL? = nil,
+        persistenceDelay: Duration = .zero
+    ) {
         let applicationRoot = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -35,6 +58,7 @@ actor SearchHistoryStore {
         legacyRoot = customLegacyRoot ?? applicationRoot.appendingPathComponent("SearchSession", isDirectory: true)
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        self.persistenceDelay = persistenceDelay
     }
 
     func bootstrap() throws {
@@ -137,6 +161,45 @@ actor SearchHistoryStore {
         return record
     }
 
+    func saveFirstUsableStage(
+        displayQuery: String,
+        normalizedQuery: String,
+        startedAt: Date,
+        completedAt: Date,
+        snapshot proposedSnapshot: SearchHistorySnapshot,
+        mutationToken: SearchHistoryMutationToken
+    ) async throws -> (record: SearchHistoryRecord, index: SearchHistoryIndex) {
+        try await delayTokenizedPersistence()
+        guard mutationToken.isValid else { throw CancellationError() }
+        let prior = try record(normalizedQuery: normalizedQuery)
+        var snapshot = proposedSnapshot
+        snapshot.revision = max(
+            snapshot.revision,
+            (prior?.snapshot.revision ?? 0) + 1
+        )
+        let record = SearchHistoryRecord(
+            schemaVersion: SearchHistoryRecord.currentSchemaVersion,
+            id: prior?.id ?? UUID(),
+            displayQuery: displayQuery,
+            normalizedQuery: normalizedQuery,
+            createdAt: prior?.createdAt ?? startedAt,
+            lastSuccessfulSearchAt: completedAt,
+            snapshot: snapshot,
+            useLedger: prior?.useLedger ?? UseLedger()
+        )
+        return (record, try save(record))
+    }
+
+    func updateSnapshot(
+        historyID: UUID,
+        snapshot: SearchHistorySnapshot,
+        mutationToken: SearchHistoryMutationToken
+    ) async throws -> SearchHistoryRecord {
+        try await delayTokenizedPersistence()
+        guard mutationToken.isValid else { throw CancellationError() }
+        return try updateSnapshot(historyID: historyID, snapshot: snapshot)
+    }
+
     func setLastOpened(_ id: UUID?) throws -> SearchHistoryIndex {
         var index = try readIndexOrRebuild()
         index.lastOpenedHistoryID = id
@@ -182,6 +245,11 @@ actor SearchHistoryStore {
         let rebuilt = try rebuildIndex()
         try writeIndex(rebuilt)
         return rebuilt
+    }
+
+    private func delayTokenizedPersistence() async throws {
+        guard persistenceDelay != .zero else { return }
+        try await Task.sleep(for: persistenceDelay)
     }
 
     private func rebuildIndex() throws -> SearchHistoryIndex {
