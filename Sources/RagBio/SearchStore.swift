@@ -190,7 +190,8 @@ final class SearchStore: ObservableObject {
         fullTextReviewSummaries = snapshot.fullTextReviewSummaries
         scanDecisions = snapshot.scanDecisions ?? [:]
         currentEvidenceTable = snapshot.currentEvidenceTable
-        decisionFilter = snapshot.decisionFilter ?? .all
+        let restoredFilter = snapshot.decisionFilter ?? .all
+        decisionFilter = restoredFilter == .use ? .use : .all
         currentFieldScanReport = snapshot.currentFieldScanReport
         isGeneratingFieldScan = false
         fieldScanError = nil
@@ -2078,6 +2079,11 @@ final class SearchStore: ObservableObject {
 
         Task { [weak self] in
             guard let self else { return }
+            defer {
+                for work in candidates {
+                    self.aiVisiblePageFullTextInProgress.remove(work.id)
+                }
+            }
             var fullTextPairs: [(work: Work, document: FullTextDocument)] = []
 
             await withTaskGroup(of: (Work, FullTextDocument?).self) { group in
@@ -2109,7 +2115,7 @@ final class SearchStore: ObservableObject {
                           document.source.isFullText,
                           Self.fullTextDocument(document, matches: work) else {
                         self.aiVisiblePageFullTextFailures[work.id] =
-                            "No accessible full text was found automatically for this paper. RagBio is showing the OpenAlex abstract only; use Read Full Text or Import PDF to try another source."
+                            "No accessible full text was found automatically for this paper, so an AI summary could not be generated."
                         continue
                     }
 
@@ -2271,7 +2277,10 @@ final class SearchStore: ObservableObject {
                     ]
                 )
             }
-            guard selection == work.id else { return }
+            guard selection == work.id else {
+                fullTextState = .idle
+                return
+            }
             fullTextDocument = document
             if document.source.isFullText {
                 aiFullTextDocuments[work.id] = document
@@ -2284,10 +2293,53 @@ final class SearchStore: ObservableObject {
             searchPassages()
             saveOnlineSearchSession()
         } catch is CancellationError {
+            if selection == work.id {
+                fullTextState = .idle
+            }
             return
         } catch {
             fullTextState = .failed(error.localizedDescription)
         }
+    }
+
+    /// User-initiated full-text lookup for the Summary tab. Unlike the exhaustive manual
+    /// loader, this has a firm total budget so the UI can never remain in a loading state.
+    func loadFullTextForSummary(for work: Work, timeoutSeconds: Int = 15) async {
+        fullTextState = .loading
+        let apiKey = CredentialStore.string(for: .openAlexAPIKey)
+        let semanticScholarAPIKey = CredentialStore.string(for: .semanticScholarAPIKey)
+        let contactEmail = UserDefaults.standard.string(forKey: SettingsKeys.contactEmail)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let document = await Self.loadFullTextWithSoftTimeout(
+            service: fullTextService,
+            work: work,
+            apiKey: apiKey,
+            contactEmail: contactEmail,
+            semanticScholarAPIKey: semanticScholarAPIKey,
+            seconds: timeoutSeconds
+        )
+
+        guard !Task.isCancelled else {
+            if selection == work.id { fullTextState = .idle }
+            return
+        }
+        guard selection == work.id else {
+            fullTextState = .idle
+            return
+        }
+        guard let document, document.source.isFullText else {
+            fullTextState = .failed(
+                "No accessible full text was found within \(timeoutSeconds) seconds, so an AI summary could not be generated."
+            )
+            return
+        }
+
+        fullTextDocument = document
+        aiFullTextDocuments[work.id] = document
+        fullTextState = .loaded
+        searchPassages()
+        saveOnlineSearchSession()
     }
 
     func importPDF(for work: Work) async {

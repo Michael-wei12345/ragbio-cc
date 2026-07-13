@@ -23,6 +23,28 @@ actor FullTextService {
 
         var errors: [String] = []
 
+        // ponytail: a declared OA PDF is the shortest path; discovery fallbacks come later.
+        var publicPDFs = [
+            work.bestOpenAccessLocation?.pdfURL,
+            work.primaryLocation?.pdfURL
+        ].compactMap { $0 }
+        publicPDFs.append(contentsOf: work.locations.compactMap(\.pdfURL))
+        publicPDFs = publicPDFs.uniqued()
+        for pdfURL in publicPDFs {
+            do {
+                let document = try await fetchPDF(
+                    urlString: pdfURL,
+                    work: work,
+                    source: .publisherPDF,
+                    apiKey: nil
+                )
+                await cache.save(document)
+                return document
+            } catch {
+                errors.append("开放 PDF：\(error.localizedDescription)")
+            }
+        }
+
         do {
             let document = try await fetchEuropePMC(work: work)
             await cache.save(document)
@@ -52,27 +74,6 @@ actor FullTextService {
                 }
             } else {
                 errors.append("OpenAlex TEI：需要 API Key")
-            }
-        }
-
-        var publicPDFs = [
-            work.bestOpenAccessLocation?.pdfURL,
-            work.primaryLocation?.pdfURL
-        ].compactMap { $0 }
-        publicPDFs.append(contentsOf: work.locations.compactMap(\.pdfURL))
-        publicPDFs = publicPDFs.uniqued()
-        for pdfURL in publicPDFs {
-            do {
-                let document = try await fetchPDF(
-                    urlString: pdfURL,
-                    work: work,
-                    source: .publisherPDF,
-                    apiKey: nil
-                )
-                await cache.save(document)
-                return document
-            } catch {
-                errors.append("开放 PDF：\(error.localizedDescription)")
             }
         }
 
@@ -329,10 +330,16 @@ actor FullTextService {
         source: FullTextSource,
         apiKey: String?
     ) async throws -> FullTextDocument {
-        guard let rawURL = URL(string: urlString) else {
+        // ponytail: OpenAlex still returns redirecting HTTP PDF links; use HTTPS for ATS.
+        let secureURLString = urlString.replacingOccurrences(
+            of: "http://",
+            with: "https://",
+            options: .anchored
+        )
+        guard let rawURL = URL(string: secureURLString) else {
             throw SearchError.invalidURL
         }
-        let url = apiKey.map { authenticatedContentURL(urlString, apiKey: $0) } ?? rawURL
+        let url = apiKey.map { authenticatedContentURL(secureURLString, apiKey: $0) } ?? rawURL
         let data = try await fetchData(from: url, accept: "application/pdf")
         if let endpoint = UserDefaults.standard.string(forKey: SettingsKeys.grobidEndpoint),
            !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

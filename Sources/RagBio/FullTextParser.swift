@@ -345,7 +345,9 @@ enum PDFTextParser {
         while remaining.count > maximumLength {
             let end = remaining.index(remaining.startIndex, offsetBy: maximumLength)
             let candidate = remaining[..<end]
-            let split = candidate.lastIndex(where: { ".!?。！？".contains($0) }) ?? end
+            let punctuation = candidate.lastIndex(where: { ".!?。！？".contains($0) })
+            // ponytail: a leading punctuation mark must not leave `remaining` unchanged.
+            let split = punctuation == remaining.startIndex ? end : (punctuation ?? end)
             chunks.append(String(remaining[..<split]).trimmingCharacters(in: .whitespaces))
             remaining = remaining[split...].drop(while: \.isWhitespace)
         }

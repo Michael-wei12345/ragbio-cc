@@ -585,6 +585,12 @@ score = lexicalNormalized * 0.72 + semantic * 0.28
 
 用户最关心的结构化摘要是 `Literature Review Summary`。
 
+### 单篇 Article Summary 的触发与时限
+
+截图中的单篇 `Article Summary` 会在论文页面拿到全文后触发；它不是持久化的后台队列。App 将最多约 7,000 个字符的全文段落摘录发送给当前启用的 AI provider，并要求输出 Topic、Methods、Results、Key Metrics、Outlook 的英文结构化摘要。单次模型请求的超时为 35 秒：超时或 API 出错后会显示错误和 `Retry`，不会在 App 进入后台后保证继续运行。
+
+论文详情页另有一个更长的系统综述导向 extraction note，只有在用户打开已读到全文的详情时才生成；它要求来源定位，单次模型请求超时为 45 秒。这个 note 同样不是持久化后台队列，也不会在下次启动时自动恢复。
+
 生成条件：
 
 - 必须有真正全文。

@@ -49,7 +49,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         case .deepSeek: return "deepseek-v4-flash"
         case .openAI: return "gpt-5.4-mini"
         case .anthropic: return "claude-sonnet-4-6"
-        case .gemini: return "gemini-2.5-flash"
+        case .gemini: return "gemini-3.5-flash"
         }
     }
 
@@ -80,11 +80,22 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable {
         case .deepSeek:
             return ["deepseek-v4-flash", "deepseek-v4-pro"]
         case .openAI:
-            return ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.5"]
+            return [
+                "gpt-5.6",
+                "gpt-5.4-nano",
+                "gpt-5.4-mini",
+                "gpt-5.4",
+                "gpt-5.5"
+            ]
         case .anthropic:
             return ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-8"]
         case .gemini:
-            return ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]
+            return [
+                "gemini-3.1-flash-lite",
+                "gemini-3.5-flash",
+                "gemini-3.1-pro-preview",
+                "gemini-2.5-pro"
+            ]
         }
     }
 

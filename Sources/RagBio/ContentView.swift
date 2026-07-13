@@ -630,7 +630,7 @@ private struct ScanDecisionFilterBar: View {
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
             Picker("Scan decision filter", selection: $store.decisionFilter) {
-                ForEach(ScanDecisionFilter.allCases) { filter in
+                ForEach([ScanDecisionFilter.all, .use]) { filter in
                     Text(filter.title).tag(filter)
                 }
             }
@@ -733,38 +733,30 @@ private struct ScanDecisionControl: View {
     var compact = false
     let onDecision: (ScanDecision) -> Void
 
+    @ViewBuilder
     var body: some View {
-        HStack(spacing: 6) {
-            if !compact {
-                Text("Current decision: \(decision.title)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        if compact {
+            if decision == .use {
+                Label("Use", systemImage: "checkmark.circle.fill")
+                    .font(.caption.bold())
+                    .foregroundStyle(.green)
             }
-            ForEach([ScanDecision.use, .maybe, .exclude]) { value in
-                Button(value.shortTitle) {
-                    onDecision(value)
+        } else {
+            HStack(spacing: 7) {
+                Button("Use") {
+                    onDecision(decision == .use ? .unreviewed : .use)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
-                .tint(decision == value ? tint(for: value) : nil)
-            }
-            if decision != .unreviewed {
-                Button("Clear") {
-                    onDecision(.unreviewed)
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.mini)
-            }
-        }
-        .font(.caption)
-    }
+                .tint(decision == .use ? .green : nil)
 
-    private func tint(for decision: ScanDecision) -> Color {
-        switch decision {
-        case .use: return .green
-        case .maybe: return .orange
-        case .exclude: return .red
-        case .unreviewed: return .secondary
+                if decision == .use {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .accessibilityLabel("Selected for Use")
+                }
+            }
+            .font(.caption)
         }
     }
 }
@@ -840,21 +832,16 @@ private struct WorkDetail: View {
                 header
                 Divider()
                 Picker("", selection: $selectedTab) {
-                    Text("论文信息").tag(0)
-                    Text("全文定位").tag(1)
+                    Text("abstract").tag(0)
+                    Text("summary").tag(1)
                 }
                 .pickerStyle(.segmented)
                 .frame(maxWidth: 460)
 
                 if selectedTab == 0 {
-                    paperEvidence
+                    abstractContent
                 } else {
-                    FullTextView(
-                        work: work,
-                        store: store,
-                        showsChineseTranslation: store.isTranslationVisible(for: work.id),
-                        translatedPassages: store.translatedPassages
-                    )
+                    summaryContent
                 }
             }
             .padding(30)
@@ -862,15 +849,6 @@ private struct WorkDetail: View {
         }
         .safeAreaInset(edge: .bottom) {
             EvidenceFooter(store: store)
-        }
-        .onChange(of: store.fullTextState) { state in
-            if state == .loaded {
-                selectedTab = 1
-                Task { await store.ensureArticleSummary(for: work) }
-            }
-        }
-        .task(id: work.id) {
-            await store.ensureArticleSummary(for: work)
         }
     }
 
@@ -924,19 +902,6 @@ private struct WorkDetail: View {
             HStack {
                 Button("打开论文页面") { store.open(work.landingPageURL) }
                     .disabled(work.landingPageURL == nil)
-                if work.pdfURL != nil {
-                    Button("打开 PDF") { store.open(work.pdfURL) }
-                }
-                Spacer()
-                Button("读取全文", systemImage: "doc.text.magnifyingglass") {
-                    selectedTab = 1
-                    Task { await store.loadFullText(for: work) }
-                }
-                .disabled(store.fullTextState == .loading)
-                Button("导入 PDF", systemImage: "square.and.arrow.down") {
-                    selectedTab = 1
-                    Task { await store.importPDF(for: work) }
-                }
             }
 
             ScanDecisionControl(
@@ -949,75 +914,34 @@ private struct WorkDetail: View {
     }
 
     @ViewBuilder
-    private var paperEvidence: some View {
-        let fullTextDocument = store.availableFullTextDocument(for: work)
-        let isAutoReadingFullText = store.searchMode == .ai
-            && store.aiVisiblePageFullTextInProgress.contains(work.id)
-        let autoFullTextFailure = store.searchMode == .ai
-            ? store.aiVisiblePageFullTextFailures[work.id]
-            : nil
-        if fullTextDocument != nil
-            || work.abstractText != nil
-            || isAutoReadingFullText
-            || autoFullTextFailure != nil {
+    private var abstractContent: some View {
+        if let abstract = work.abstractText {
             VStack(alignment: .leading, spacing: 16) {
-                if let fullTextDocument {
-                    if let note = store.articleSummaries[work.id] {
-                        ArticleSummaryView(
-                            note: note,
-                            sourceLabel: "Based on full text · \(fullTextDocument.source.title)"
-                        )
-                    } else {
-                        LiteratureReviewSummaryStatusCard(
-                            isLoading: store.articleSummaryInProgress.contains(work.id),
-                            message: store.articleSummaryErrors[work.id]
-                                ?? "Generating an Article Summary from the full text…"
-                        )
-                    }
-                } else if isAutoReadingFullText {
-                    LiteratureReviewSummaryStatusCard(
-                        isLoading: true,
-                        message: "Trying to read accessible full text and generate an English literature-review summary…"
-                    )
-                } else if let message = autoFullTextFailure {
-                    LiteratureReviewSummaryStatusCard(
-                        isLoading: false,
-                        message: message
-                    )
-                }
+                let displayedAbstract = store.isTranslationVisible(for: work.id)
+                    ? (store.translatedAbstracts[work.id] ?? abstract)
+                    : abstract
+                Text(
+                    store.isTranslationVisible(for: work.id)
+                        && store.translatedAbstracts[work.id] != nil
+                        ? "中文摘要"
+                        : "abstract"
+                )
+                    .font(.title3.bold())
+                Text(displayedAbstract)
+                    .font(.body)
+                    .lineSpacing(6)
+                    .textSelection(.enabled)
 
-                if let abstract = work.abstractText {
-                    let displayedAbstract = store.isTranslationVisible(for: work.id)
-                        ? (store.translatedAbstracts[work.id] ?? abstract)
-                        : abstract
-                    Text(
-                        store.isTranslationVisible(for: work.id)
-                            && store.translatedAbstracts[work.id] != nil
-                            ? "中文摘要"
-                            : "OpenAlex 摘要"
-                    )
+                if store.isTranslationVisible(for: work.id),
+                   store.translatedAbstracts[work.id] != nil {
+                    Text("英文原文")
                         .font(.title3.bold())
-                    Text(displayedAbstract)
-                        .font(.body)
-                        .lineSpacing(6)
+                        .padding(.top, 4)
+                    Text(abstract)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineSpacing(4)
                         .textSelection(.enabled)
-
-                    if store.isTranslationVisible(for: work.id),
-                       store.translatedAbstracts[work.id] != nil {
-                        Text("英文原文")
-                            .font(.title3.bold())
-                            .padding(.top, 4)
-                        Text(abstract)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .lineSpacing(4)
-                            .textSelection(.enabled)
-                    }
-                }
-            }
-            .task(id: fullTextDocument?.loadedAt) {
-                if fullTextDocument != nil {
-                    await store.ensureFullTextReviewSummary(for: work)
                 }
             }
         } else {
@@ -1027,6 +951,66 @@ private struct WorkDetail: View {
                 description: "OpenAlex 只返回了论文元数据。RagBio 不会假装读取过正文；请通过论文页面确认原文。"
             )
         }
+    }
+
+    @ViewBuilder
+    private var summaryContent: some View {
+        let fullTextDocument = store.availableFullTextDocument(for: work)
+        let isReadingFullText = store.fullTextState == .loading
+            || store.aiVisiblePageFullTextInProgress.contains(work.id)
+
+        VStack(alignment: .leading, spacing: 16) {
+            if let note = store.articleSummaries[work.id], let fullTextDocument {
+                ArticleSummaryView(
+                    note: note,
+                    sourceLabel: "Based on full text · \(fullTextDocument.source.title)"
+                )
+            } else if store.articleSummaryInProgress.contains(work.id) {
+                LiteratureReviewSummaryStatusCard(
+                    isLoading: true,
+                    message: "Generating this paper's AI summary from the full text…"
+                )
+            } else if let error = store.articleSummaryErrors[work.id] {
+                LiteratureReviewSummaryStatusCard(
+                    isLoading: false,
+                    message: error,
+                    onRetry: { Task { await generateArticleSummary() } }
+                )
+            } else if isReadingFullText {
+                LiteratureReviewSummaryStatusCard(
+                    isLoading: true,
+                    message: "Trying to read accessible full text before generating this paper's summary…"
+                )
+            } else if fullTextDocument != nil {
+                LiteratureReviewSummaryStatusCard(
+                    isLoading: true,
+                    message: "Preparing this paper's AI summary…"
+                )
+            } else if case let .failed(message) = store.fullTextState {
+                LiteratureReviewSummaryStatusCard(
+                    isLoading: false,
+                    message: message,
+                    onRetry: { Task { await generateArticleSummary() } }
+                )
+            } else {
+                LiteratureReviewSummaryStatusCard(
+                    isLoading: false,
+                    message: store.aiVisiblePageFullTextFailures[work.id]
+                        ?? "No accessible full text was found for this paper, so an AI summary could not be generated.",
+                    onRetry: { Task { await generateArticleSummary() } }
+                )
+            }
+        }
+        .task(id: work.id) {
+            await generateArticleSummary()
+        }
+    }
+
+    private func generateArticleSummary() async {
+        if store.availableFullTextDocument(for: work) == nil {
+            await store.loadFullTextForSummary(for: work)
+        }
+        await store.ensureArticleSummary(for: work)
     }
 
     private var displayedTitle: String {
@@ -1879,6 +1863,7 @@ private struct ArticleSummaryView: View {
 private struct LiteratureReviewSummaryStatusCard: View {
     let isLoading: Bool
     let message: String
+    var onRetry: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1893,6 +1878,11 @@ private struct LiteratureReviewSummaryStatusCard: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Spacer()
+            if !isLoading, let onRetry {
+                Button("Retry", action: onRetry)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
         }
         .padding(16)
         .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
