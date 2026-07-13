@@ -256,70 +256,7 @@ private struct SearchHeader: View {
                     Task { await store.search() }
                 }
 
-            VStack(alignment: .leading, spacing: 6) {
-                Button {
-                    Task { await store.generateFieldSummary(scope: .topResults) }
-                } label: {
-                    Label("生成领域 summary", systemImage: "sparkles")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .font(.caption)
-                .disabled(store.works.isEmpty || store.isGeneratingFieldSummary)
-
-                if !store.works.isEmpty {
-                    Text(store.fullTextSummaryCount > 0
-                         ? "已读全文 \(store.fullTextSummaryCount) 篇；生成时会用上，结论更扎实"
-                         : "提示：等结果里的全文加载完再点，能用上全文而不只是摘要")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if store.isGeneratingFieldSummary {
-                    Label("正在生成领域 summary…", systemImage: "hourglass")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let error = store.fieldSummaryError {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .sheet(item: $store.fieldSummary) { report in
-                FieldSummaryView(report: report, workTitles: store.workTitleLookup, workURLs: store.workURLLookup)
-            }
-
             if store.searchMode == .ai {
-                HStack(spacing: 5) {
-                    Image(systemName: "sparkles")
-                        .foregroundStyle(.purple)
-                    Text("由 \(store.activeAIProvider.title) 理解描述，再检索 OpenAlex")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                if let plan = store.lastAIPlan {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("AI 检索式：\(plan.searchQuery)")
-                            .lineLimit(2)
-                        if !plan.explanation.isEmpty {
-                            Text(plan.explanation)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    }
-                    .font(.caption)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        Color.purple.opacity(0.08),
-                        in: RoundedRectangle(cornerRadius: 8)
-                    )
-                }
-
                 switch store.aiRerankState {
                 case .fetchingCandidates:
                     Label("正在获取 50 篇候选论文", systemImage: "tray.and.arrow.down")
@@ -445,13 +382,16 @@ private struct SearchHeader: View {
                     .toggleStyle(.checkbox)
                     .font(.caption)
 
-                Stepper(
-                    value: $store.fromYear,
-                    in: 1900...Calendar.current.component(.year, from: Date())
-                ) {
-                    Text(String(store.fromYear))
-                        .monospacedDigit()
+                Picker("年份", selection: $store.fromYear) {
+                    ForEach(
+                        Array((1900...Calendar.current.component(.year, from: Date())).reversed()),
+                        id: \.self
+                    ) { year in
+                        Text(String(year)).tag(year)
+                    }
                 }
+                .pickerStyle(.menu)
+                .labelsHidden()
                 .disabled(!store.fromYearEnabled)
 
                 Spacer()
@@ -1905,9 +1845,7 @@ private struct EvidenceFooter: View {
                 systemImage: "checkmark.shield"
             )
             Spacer()
-            Text("数据源：OpenAlex")
-            Text("·")
-            Text(store.fullTextDocument?.source.title ?? "未读取到全文时仅基于摘要")
+            Text("检索：OpenAlex + PubMed · 当前论文：\(store.fullTextDocument?.source.title ?? "摘要")")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
