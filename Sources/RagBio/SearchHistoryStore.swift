@@ -41,11 +41,14 @@ actor SearchHistoryStore {
     private let decoder = JSONDecoder()
     // ponytail: zero in the app; nonzero only makes invalidation races deterministic in tests.
     private let persistenceDelay: Duration
+    private let useReturnDelay: Duration
+    private(set) var isUseReturnDelayed = false
 
     init(
         root customRoot: URL? = nil,
         legacyRoot customLegacyRoot: URL? = nil,
-        persistenceDelay: Duration = .zero
+        persistenceDelay: Duration = .zero,
+        useReturnDelay: Duration = .zero
     ) {
         let applicationRoot = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -59,6 +62,7 @@ actor SearchHistoryStore {
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         self.persistenceDelay = persistenceDelay
+        self.useReturnDelay = useReturnDelay
     }
 
     func bootstrap() throws {
@@ -139,7 +143,7 @@ actor SearchHistoryStore {
         }
     }
 
-    func setUse(historyID: UUID, work: Work, isUsed: Bool) throws -> SearchHistoryRecord {
+    func setUse(historyID: UUID, work: Work, isUsed: Bool) async throws -> SearchHistoryRecord {
         var record = try loadRecord(id: historyID)
         if isUsed {
             record.useLedger.mark(work)
@@ -147,6 +151,11 @@ actor SearchHistoryStore {
             record.useLedger.remove(work)
         }
         _ = try save(record)
+        if useReturnDelay != .zero {
+            isUseReturnDelayed = true
+            try? await Task.sleep(for: useReturnDelay)
+            isUseReturnDelayed = false
+        }
         return record
     }
 

@@ -529,8 +529,8 @@ import Testing
             legacyRoot: root.appendingPathComponent("SearchSession")
         )
         try await historyStore.bootstrap()
-        let used = makeWork(id: "https://openalex.org/W1")
-        let reappeared = makeWork(id: "https://openalex.org/W2")
+        let used = makeWork(id: "old-local-id", pmid: nil, year: nil)
+        let reappeared = makeWork(id: "new-local-id", pmid: nil, year: nil)
         var ledger = UseLedger()
         ledger.mark(used)
         let record = makeRecord(
@@ -565,6 +565,41 @@ import Testing
         #expect(store.currentHistoryRecord?.useLedger.contains(work) == true)
         #expect(store.historySummaries.first?.useCount == 1)
         #expect(try await historyStore.loadRecord(id: record.id).useLedger.contains(work))
+    }
+
+    @Test func concurrentStageAndUsePublishNewestSnapshotAndLedger() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession"),
+            useReturnDelay: .milliseconds(200)
+        )
+        try await historyStore.bootstrap()
+        let work = makeWork()
+        let record = makeRecord(query: "gut", works: [work], date: Date())
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(record.id)
+        let generation = store.captureHistoryMutationContext().searchGeneration
+        var snapshot = store.makeHistorySnapshot(displayQuery: "gut", revision: 1)
+        snapshot.searchTimingSummary = "newest stage"
+        let pendingUse = Task { @MainActor in
+            await store.setUse(true, for: work)
+        }
+        while await !historyStore.isUseReturnDelayed {
+            await Task.yield()
+        }
+
+        await store.persistCurrentStage(snapshot, expectedGeneration: generation)
+        await pendingUse.value
+
+        let disk = try await historyStore.loadRecord(id: record.id)
+        #expect(disk.snapshot.revision == 1)
+        #expect(disk.snapshot.searchTimingSummary == "newest stage")
+        #expect(disk.useLedger.contains(work))
+        #expect(store.currentHistoryRecord?.snapshot.revision == 1)
+        #expect(store.currentHistoryRecord?.snapshot.searchTimingSummary == "newest stage")
+        #expect(store.currentHistoryRecord?.useLedger.contains(work) == true)
     }
 
     @Test func failedUseWriteRestoresPreviousVisibleDecision() async throws {
@@ -608,13 +643,50 @@ import Testing
 
         store.setScanDecision(.use, for: work)
         store.setScanDecision(.unreviewed, for: work)
-        store.setScanDecision(.use, for: work)
-        try await Task.sleep(for: .milliseconds(250))
+        await store.waitForPendingUseMutations()
 
-        #expect(store.decision(for: work) == .use)
-        #expect(store.currentHistoryRecord?.useLedger.contains(work) == true)
-        #expect(store.historySummaries.first?.useCount == 1)
-        #expect(try await historyStore.loadRecord(id: record.id).useLedger.contains(work))
+        #expect(store.decision(for: work) == .unreviewed)
+        #expect(store.currentHistoryRecord?.useLedger.contains(work) == false)
+        #expect(store.historySummaries.first?.useCount == 0)
+        #expect(try await historyStore.loadRecord(id: record.id).useLedger.contains(work) == false)
+    }
+
+    @Test func pendingUseAcrossHistorySwitchNeverPublishesIntoNewHistory() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession"),
+            useReturnDelay: .milliseconds(200)
+        )
+        try await historyStore.bootstrap()
+        let oldWork = makeWork()
+        let old = makeRecord(query: "old", works: [oldWork], date: Date())
+        let newWork = makeWork(
+            id: "https://openalex.org/W2",
+            doi: "10.1000/new"
+        )
+        let new = makeRecord(
+            query: "new",
+            works: [newWork],
+            date: Date().addingTimeInterval(1)
+        )
+        _ = try await historyStore.save(old)
+        _ = try await historyStore.save(new)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(old.id)
+        store.setScanDecision(.use, for: oldWork)
+        while await !historyStore.isUseReturnDelayed {
+            await Task.yield()
+        }
+
+        await store.openHistory(new.id)
+        await store.waitForPendingUseMutations()
+
+        #expect(store.currentHistoryID == new.id)
+        #expect(store.currentHistoryRecord == new)
+        #expect(store.historyErrorMessage == nil)
+        #expect(try await historyStore.loadRecord(id: old.id).useLedger.contains(oldWork))
+        #expect(try await historyStore.loadRecord(id: new.id).useLedger.papers.isEmpty)
     }
 }
 

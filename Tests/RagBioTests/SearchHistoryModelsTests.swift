@@ -11,17 +11,39 @@ import Testing
         )
     }
 
-    @Test func paperIdentityUsesSharedDOIThenPMIDThenOpenAlexThenFallback() {
-        let doiA = makeWork(id: "https://openalex.org/W1")
-        let doiB = makeWork(id: "https://openalex.org/W2", doi: "HTTPS://DOI.ORG/10.1000/EXAMPLE")
-        #expect(PaperIdentity(work: doiA).matches(PaperIdentity(work: doiB)))
+    @Test func paperIdentityMatchesDOIOnly() {
+        let first = makeWork(id: "", pmid: nil, year: nil)
+        let second = makeWork(
+            id: "",
+            doi: "HTTPS://DOI.ORG/10.1000/EXAMPLE",
+            pmid: nil,
+            year: nil
+        )
+        #expect(PaperIdentity(work: first).matches(PaperIdentity(work: second)))
+    }
 
-        let fallbackA = makeWork(id: "", doi: nil, pmid: nil)
-        let fallbackB = makeWork(id: "", doi: nil, pmid: nil)
-        #expect(PaperIdentity(work: fallbackA).matches(PaperIdentity(work: fallbackB)))
+    @Test func paperIdentityMatchesPMIDOnly() {
+        let first = makeWork(id: "", doi: nil, year: nil)
+        let second = makeWork(id: "", doi: nil, year: nil)
+        #expect(PaperIdentity(work: first).matches(PaperIdentity(work: second)))
+    }
 
-        let conflictingDOI = makeWork(id: "", doi: "10.1000/different", pmid: nil)
-        #expect(!PaperIdentity(work: doiA).matches(PaperIdentity(work: conflictingDOI)))
+    @Test func paperIdentityMatchesOpenAlexOnly() {
+        let first = makeWork(doi: nil, pmid: nil, year: nil)
+        let second = makeWork(doi: nil, pmid: nil, year: nil)
+        #expect(PaperIdentity(work: first).matches(PaperIdentity(work: second)))
+    }
+
+    @Test func paperIdentityMatchesFallbackOnly() {
+        let first = makeWork(id: "", doi: nil, pmid: nil)
+        let second = makeWork(id: "", doi: nil, pmid: nil)
+        #expect(PaperIdentity(work: first).matches(PaperIdentity(work: second)))
+    }
+
+    @Test func conflictingDOIPreventsFallbackMatch() {
+        let first = makeWork(id: "", doi: "10.1000/first", pmid: nil)
+        let second = makeWork(id: "", doi: "10.1000/second", pmid: nil)
+        #expect(!PaperIdentity(work: first).matches(PaperIdentity(work: second)))
     }
 
     @Test func useLedgerKeepsMissingPaperAndRefreshesMetadataWhenPaperReturns() {

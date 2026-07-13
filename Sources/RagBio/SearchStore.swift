@@ -532,7 +532,12 @@ final class SearchStore: ObservableObject {
             let index = try await historyStore.loadIndex()
             guard expectedGeneration == searchGeneration,
                   mutationToken.isValid else { return }
-            currentHistoryRecord = record
+            if var current = currentHistoryRecord,
+               current.id == record.id,
+               record.snapshot.revision >= current.snapshot.revision {
+                current.snapshot = record.snapshot
+                currentHistoryRecord = current
+            }
             historySummaries = index.summaries
         } catch {
             guard expectedGeneration == searchGeneration,
@@ -650,6 +655,10 @@ final class SearchStore: ObservableObject {
         setScanDecision(.unreviewed, for: work)
     }
 
+    func waitForPendingUseMutations() async {
+        await useMutationTask?.value
+    }
+
     func setUse(_ isUsed: Bool, for work: Work) async {
         guard let historyID = currentHistoryID else { return }
         await setUse(isUsed, for: work, expectedHistoryID: historyID)
@@ -686,14 +695,22 @@ final class SearchStore: ObservableObject {
             let index = try await historyStore.loadIndex()
             guard revision == useMutationRevision,
                   isCurrentHistoryMutationContext(context) else { return }
-            currentHistoryRecord = record
+            if var current = currentHistoryRecord,
+               current.id == record.id {
+                current.useLedger = record.useLedger
+                currentHistoryRecord = current
+            }
             historySummaries = index.summaries
             applyUseLedgerToVisibleWorks(record.useLedger)
             historyErrorMessage = nil
         } catch {
             guard revision == useMutationRevision,
                   isCurrentHistoryMutationContext(context) else { return }
-            currentHistoryRecord = previous
+            if var current = currentHistoryRecord,
+               current.id == previous.id {
+                current.useLedger = previous.useLedger
+                currentHistoryRecord = current
+            }
             applyUseLedgerToVisibleWorks(previous.useLedger)
             historyErrorMessage = "Use could not be saved. Your previous selection was restored."
         }
