@@ -6,27 +6,6 @@ extension Notification.Name {
     )
 }
 
-enum SearchMode: String, CaseIterable, Identifiable, Codable {
-    case keyword
-    case ai
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .keyword: return "关键词搜索"
-        case .ai: return "AI 搜索"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .keyword: return "text.magnifyingglass"
-        case .ai: return "sparkles"
-        }
-    }
-}
-
 enum AIProvider: String, CaseIterable, Identifiable, Codable {
     case deepSeek
     case openAI

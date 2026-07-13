@@ -41,12 +41,6 @@ struct ContentView: View {
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .task {
-            if store.works.isEmpty,
-               !store.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                await store.search()
-            }
-        }
     }
 }
 
@@ -57,6 +51,7 @@ private struct SidebarView: View {
         VStack(spacing: 0) {
             SearchHeader(store: store)
                 .padding(16)
+                .zIndex(20)
 
             Divider()
 
@@ -172,11 +167,9 @@ private struct SidebarView: View {
                         translatedTitle: store.isTranslationVisible(for: work.id)
                             ? store.translatedTitles[work.id]
                             : nil,
-                        aiScore: store.searchMode == .ai ? store.aiScores[work.id] : nil,
-                        aiReason: store.searchMode == .ai ? store.aiReasons[work.id] : nil,
-                        aiEvidenceLevel: store.searchMode == .ai
-                            ? store.aiEvidenceLevels[work.id]
-                            : nil,
+                        aiScore: store.aiScores[work.id],
+                        aiReason: store.aiReasons[work.id],
+                        aiEvidenceLevel: store.aiEvidenceLevels[work.id],
                         decision: store.decision(for: work)
                     ) { decision in
                         store.setScanDecision(decision, for: work)
@@ -226,107 +219,93 @@ private struct SearchHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "text.magnifyingglass")
-                    .font(.title2)
-                    .foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("RagBio")
-                        .font(.title2.bold())
-                    Text("可追溯的学术证据检索")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Picker("搜索模式", selection: $store.searchMode) {
-                ForEach(SearchMode.allCases) { mode in
-                    Label(mode.title, systemImage: mode.icon).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            TextField(searchPlaceholder, text: $store.query)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 15))
-                .onSubmit {
-                    Task { await store.search() }
-                }
-
-            if store.searchMode == .ai {
-                switch store.aiRerankState {
-                case .fetchingCandidates:
-                    Label("正在获取 50 篇候选论文", systemImage: "tray.and.arrow.down")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                case let .localReady(candidates):
-                    Label(
-                        "已先显示 \(candidates) 篇临时候选，后台继续 AI 精排",
-                        systemImage: "bolt"
-                    )
+            VStack(alignment: .leading, spacing: 1) {
+                Text("RagBio")
+                    .font(.title2.bold())
+                Text("可追溯的学术证据检索")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                case let .ranking(completed, total):
-                    HStack {
-                        ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                        Text("AI 重排 \(completed)/\(total)")
-                            .font(.caption.monospacedDigit())
-                    }
-                case let .completed(candidates, retained):
-                    Label(
-                        "已分析 \(candidates) 篇候选，排除明显无关后保留 \(retained) 篇",
-                        systemImage: "checkmark.circle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.green)
-                case let .failed(message, candidates):
-                    Label(
-                        "\(message)，当前保留 \(candidates) 篇临时候选",
-                        systemImage: "info.circle"
-                    )
+            }
+
+            SearchHistoryField(store: store)
+
+            if store.isRefreshingHistory {
+                Text("Refreshing…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                case .idle:
-                    EmptyView()
-                }
+            }
 
-                switch store.aiSecondRerankState {
-                case let .fetchingEvidence(completed, total):
-                    HStack {
-                        ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                        Text("准备证据 \(completed)/\(total)")
-                            .font(.caption.monospacedDigit())
-                    }
-                case let .rankingEvidence(completed, total):
-                    HStack {
-                        ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                        Text("快速证据重排 \(completed)/\(total)")
-                            .font(.caption.monospacedDigit())
-                    }
-                case let .refiningFullText(completed, total):
-                    HStack {
-                        ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                        Text("结果已显示 · 后台补全文 \(completed)/\(total)")
-                            .font(.caption.monospacedDigit())
-                    }
-                case let .completed(fullText, abstractOnly, retained):
-                    Label(
-                        "二次重排完成：\(fullText) 篇使用全文段落，\(abstractOnly) 篇仅用摘要；列表仍保留 \(retained) 篇，可继续翻页",
-                        systemImage: "text.magnifyingglass"
-                    )
+            switch store.aiRerankState {
+            case .fetchingCandidates:
+                Label("正在获取 50 篇候选论文", systemImage: "tray.and.arrow.down")
                     .font(.caption)
-                    .foregroundStyle(.green)
-                case let .failed(message):
-                    Label(
-                        "正文二次重排失败，已保留摘要粗排结果：\(message)",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                case .idle:
-                    EmptyView()
+                    .foregroundStyle(.secondary)
+            case let .localReady(candidates):
+                Label(
+                    "已先显示 \(candidates) 篇临时候选，后台继续 AI 精排",
+                    systemImage: "bolt"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            case let .ranking(completed, total):
+                HStack {
+                    ProgressView(value: Double(completed), total: Double(max(total, 1)))
+                    Text("AI 重排 \(completed)/\(total)")
+                        .font(.caption.monospacedDigit())
                 }
+            case let .completed(candidates, retained):
+                Label(
+                    "已分析 \(candidates) 篇候选，排除明显无关后保留 \(retained) 篇",
+                    systemImage: "checkmark.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.green)
+            case let .failed(message, candidates):
+                Label(
+                    "\(message)，当前保留 \(candidates) 篇临时候选",
+                    systemImage: "info.circle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            case .idle:
+                EmptyView()
+            }
+
+            switch store.aiSecondRerankState {
+            case let .fetchingEvidence(completed, total):
+                HStack {
+                    ProgressView(value: Double(completed), total: Double(max(total, 1)))
+                    Text("准备证据 \(completed)/\(total)")
+                        .font(.caption.monospacedDigit())
+                }
+            case let .rankingEvidence(completed, total):
+                HStack {
+                    ProgressView(value: Double(completed), total: Double(max(total, 1)))
+                    Text("快速证据重排 \(completed)/\(total)")
+                        .font(.caption.monospacedDigit())
+                }
+            case let .refiningFullText(completed, total):
+                HStack {
+                    ProgressView(value: Double(completed), total: Double(max(total, 1)))
+                    Text("结果已显示 · 后台补全文 \(completed)/\(total)")
+                        .font(.caption.monospacedDigit())
+                }
+            case let .completed(fullText, abstractOnly, retained):
+                Label(
+                    "二次重排完成：\(fullText) 篇使用全文段落，\(abstractOnly) 篇仅用摘要；列表仍保留 \(retained) 篇，可继续翻页",
+                    systemImage: "text.magnifyingglass"
+                )
+                .font(.caption)
+                .foregroundStyle(.green)
+            case let .failed(message):
+                Label(
+                    "正文二次重排失败，已保留摘要粗排结果：\(message)",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            case .idle:
+                EmptyView()
             }
 
             if let error = store.errorMessage {
@@ -340,6 +319,13 @@ private struct SearchHeader: View {
                 Label(historyError, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let exportMessage = store.exportMessage {
+                Label(exportMessage, systemImage: "square.and.arrow.up")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -400,32 +386,7 @@ private struct SearchHeader: View {
                 .disabled(!store.fromYearEnabled)
 
                 Spacer()
-
-                Button {
-                    Task { await store.search() }
-                } label: {
-                    if store.isLoading {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Label("检索", systemImage: "magnifyingglass")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(
-                    store.isLoading
-                        || store.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                )
             }
-        }
-    }
-
-    private var searchPlaceholder: String {
-        switch store.searchMode {
-        case .keyword:
-            return "例如：CRISPR off-target detection"
-        case .ai:
-            return "描述你想找什么，例如：近五年提高 CRISPR 脱靶检测灵敏度的方法"
         }
     }
 }

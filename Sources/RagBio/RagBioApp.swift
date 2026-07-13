@@ -17,7 +17,12 @@ struct RagBioApp: App {
                     Task { await store.search() }
                 }
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(store.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    !SearchHistorySuggestions.canSubmit(
+                        query: store.query,
+                        isLoading: store.isLoading
+                    )
+                )
             }
         }
 
