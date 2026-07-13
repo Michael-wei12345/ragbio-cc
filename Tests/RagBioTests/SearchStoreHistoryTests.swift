@@ -42,11 +42,12 @@ import Testing
         #expect(store.query.isEmpty)
     }
 
-    @Test func openingAnotherHistoryInvalidatesAllAsyncMutationGenerations() async throws {
+    @Test func openingAnotherHistoryInvalidatesAllAsyncMutationGenerationsAndLaterStage() async throws {
         let root = try makeTemporaryDirectory()
         let historyStore = SearchHistoryStore(
             root: root.appendingPathComponent("SearchHistory"),
-            legacyRoot: root.appendingPathComponent("SearchSession")
+            legacyRoot: root.appendingPathComponent("SearchSession"),
+            persistenceDelay: .milliseconds(200)
         )
         try await historyStore.bootstrap()
         let first = makeRecord(query: "first", works: [makeWork()], date: Date())
@@ -60,13 +61,105 @@ import Testing
         let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
         await store.openHistory(first.id)
         let firstContext = store.captureHistoryMutationContext()
+        var staleSnapshot = first.snapshot
+        staleSnapshot.revision = 1
+        staleSnapshot.searchTimingSummary = "stale later stage"
+        let pending = Task { @MainActor in
+            await store.persistCurrentStage(
+                staleSnapshot,
+                expectedGeneration: firstContext.searchGeneration
+            )
+        }
+        await Task.yield()
+        try await Task.sleep(for: .milliseconds(25))
 
         await store.openHistory(second.id)
+        await pending.value
         let secondContext = store.captureHistoryMutationContext()
 
         #expect(firstContext.searchGeneration != secondContext.searchGeneration)
         #expect(firstContext.corpusGeneration != secondContext.corpusGeneration)
         #expect(!store.isCurrentHistoryMutationContext(firstContext))
+        #expect(try await historyStore.loadRecord(id: first.id).snapshot.revision == 0)
+        #expect(store.currentHistoryID == second.id)
+        #expect(store.works.map(\.shortID) == ["W2"])
+        #expect(store.currentHistoryRecord == second)
+    }
+
+    @Test func openingAnotherHistoryPreventsPendingFirstStagePersistenceAndPublication() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession"),
+            persistenceDelay: .milliseconds(200)
+        )
+        try await historyStore.bootstrap()
+        let saved = makeRecord(query: "saved", works: [makeWork()], date: Date())
+        _ = try await historyStore.save(saved)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        let generation = await store.beginHistorySearch(displayQuery: "new query")
+        let stagedWork = makeWork(
+            id: "https://openalex.org/W2",
+            doi: "10.1000/staged"
+        )
+        store.restoreHistoryRecord(
+            makeRecord(query: "new query", works: [stagedWork], date: Date())
+        )
+        let pending = Task { @MainActor in
+            await store.commitFirstUsableHistoryStage(
+                displayQuery: "new query",
+                startedAt: Date(),
+                generation: generation
+            )
+        }
+        await Task.yield()
+        try await Task.sleep(for: .milliseconds(25))
+
+        await store.openHistory(saved.id)
+        await pending.value
+
+        let index = try await historyStore.loadIndex()
+        #expect(index.summaries.map(\.id) == [saved.id])
+        #expect(store.currentHistoryID == saved.id)
+        #expect(store.currentHistoryRecord == saved)
+        #expect(store.works.map(\.shortID) == ["W1"])
+    }
+
+    @Test func openingDamagedHistoryClearsVisibleStateAndValidHistoryStillOpens() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        let historyStore = SearchHistoryStore(
+            root: historyRoot,
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let valid = makeRecord(query: "valid", works: [makeWork()], date: Date())
+        let damaged = makeRecord(
+            query: "damaged",
+            works: [makeWork(id: "https://openalex.org/W2")],
+            date: Date().addingTimeInterval(1)
+        )
+        _ = try await historyStore.save(valid)
+        _ = try await historyStore.save(damaged)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(valid.id)
+        try Data("broken".utf8).write(
+            to: historyRoot.appendingPathComponent("records/\(damaged.id.uuidString).json")
+        )
+
+        await store.openHistory(damaged.id)
+
+        #expect(store.historyErrorMessage == "This search history is damaged and could not be opened.")
+        #expect(store.currentHistoryID == nil)
+        #expect(store.currentHistoryRecord == nil)
+        #expect(store.query.isEmpty)
+        #expect(store.works.isEmpty)
+
+        await store.openHistory(valid.id)
+
+        #expect(store.historyErrorMessage == nil)
+        #expect(store.currentHistoryID == valid.id)
+        #expect(store.works.map(\.shortID) == ["W1"])
     }
 
     @Test func deletingCurrentHistoryInvalidatesAsyncMutationContext() async throws {
@@ -128,12 +221,13 @@ import Testing
         _ = try await historyStore.save(old)
         let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
         await store.openHistory(old.id)
+        await store.setUse(true, for: old.snapshot.allWorks[0])
         store.sort = .newest
         store.fromYearEnabled = true
         store.fromYear = 2017
         store.openAccessOnly = true
 
-        let generation = await store.beginHistorySearch(displayQuery: "gut")
+        let generation = await store.beginHistorySearch(displayQuery: " GUT ")
 
         #expect(store.works.first?.shortID == "W1")
         #expect(store.isRefreshingHistory)
@@ -146,7 +240,7 @@ import Testing
             id: "https://openalex.org/W2",
             doi: "10.1000/refreshed"
         )
-        var staged = old
+        var staged = try #require(store.currentHistoryRecord)
         staged.snapshot.allWorks = [refreshed]
         staged.snapshot.rankedWorks = [refreshed]
         staged.snapshot.totalCount = 1
@@ -158,17 +252,91 @@ import Testing
         store.restoreHistoryRecord(staged)
 
         await store.commitFirstUsableHistoryStage(
-            displayQuery: "gut",
+            displayQuery: " GUT ",
             startedAt: Date(timeIntervalSince1970: 10),
             generation: generation
         )
 
         let saved = try await historyStore.loadRecord(id: old.id)
+        let index = try await historyStore.loadIndex()
+        #expect(index.summaries.count == 1)
+        #expect(index.summaries.first?.id == old.id)
+        #expect(index.summaries.first?.normalizedQuery == SearchQueryIdentity.normalize("gut"))
+        #expect(index.summaries.first?.useCount == 1)
         #expect(saved.snapshot.allWorks.map(\.shortID) == ["W2"])
         #expect(saved.snapshot.sort == .newest)
         #expect(saved.snapshot.fromYearEnabled)
         #expect(saved.snapshot.fromYear == 2017)
         #expect(saved.snapshot.openAccessOnly)
+        #expect(saved.useLedger.papers.count == 1)
+    }
+
+    @Test func zeroResultFirstCommitDoesNotCreateHistory() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        let generation = await store.beginHistorySearch(displayQuery: "no results")
+
+        await store.commitFirstUsableHistoryStage(
+            displayQuery: "no results",
+            startedAt: Date(),
+            generation: generation
+        )
+
+        #expect(try await historyStore.loadIndex().summaries.isEmpty)
+        #expect(store.currentHistoryID == nil)
+        #expect(store.currentHistoryRecord == nil)
+    }
+
+    @Test func restartRestoresLastCompletedStageFiltersAndUseWithoutLoading() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        let legacyRoot = root.appendingPathComponent("SearchSession")
+        let writer = SearchHistoryStore(root: historyRoot, legacyRoot: legacyRoot)
+        try await writer.bootstrap()
+        let used = makeWork()
+        let visible = makeWork(
+            id: "https://openalex.org/W2",
+            doi: "10.1000/visible"
+        )
+        var ledger = UseLedger()
+        ledger.mark(used, at: Date(timeIntervalSince1970: 1))
+        var record = makeRecord(
+            query: "restart query",
+            works: [visible],
+            date: Date(timeIntervalSince1970: 2),
+            useLedger: ledger
+        )
+        record.snapshot.revision = 4
+        record.snapshot.sort = .newest
+        record.snapshot.fromYearEnabled = true
+        record.snapshot.fromYear = 2019
+        record.snapshot.openAccessOnly = true
+        record.snapshot.searchTimingSummary = "completed stage"
+        _ = try await writer.save(record)
+
+        let reader = SearchHistoryStore(root: historyRoot, legacyRoot: legacyRoot)
+        let relaunched = SearchStore(historyStore: reader, restoreOnInit: false)
+        await relaunched.loadInitialHistory()
+
+        #expect(relaunched.currentHistoryID == record.id)
+        #expect(relaunched.query == "restart query")
+        #expect(relaunched.works.map(\.shortID) == ["W2"])
+        #expect(relaunched.sort == .newest)
+        #expect(relaunched.fromYearEnabled)
+        #expect(relaunched.fromYear == 2019)
+        #expect(relaunched.openAccessOnly)
+        #expect(relaunched.currentHistoryRecord?.snapshot.revision == 4)
+        #expect(relaunched.searchTimingSummary == "completed stage")
+        #expect(relaunched.currentHistoryRecord?.useLedger.contains(used) == true)
+        #expect(!relaunched.isLoading)
+        #expect(!relaunched.isRefreshingHistory)
+        #expect(relaunched.aiRerankState == .completed(candidates: 1, retained: 1))
+        #expect(relaunched.aiSecondRerankState == .idle)
     }
 
     @Test func staleGenerationCannotPersistStage() async throws {

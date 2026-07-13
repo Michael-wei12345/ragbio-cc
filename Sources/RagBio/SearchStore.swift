@@ -159,6 +159,7 @@ final class SearchStore: ObservableObject {
             historyErrorMessage = nil
         } catch {
             guard openGeneration == searchGeneration else { return }
+            clearVisibleSearch(invalidateAsync: false)
             historyErrorMessage = error.localizedDescription
         }
     }

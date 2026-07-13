@@ -40,6 +40,41 @@ import Testing
         let rebuilt = try await store.loadIndex()
 
         #expect(rebuilt.summaries.map(\.id) == [valid.id])
+        #expect(try await store.loadRecord(id: valid.id) == valid)
+    }
+
+    @Test func largeValidIndexLoadsNewestFirstWithoutDecodingDamagedRecord() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let legacyRoot = root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        let writer = SearchHistoryStore(root: root, legacyRoot: legacyRoot)
+        try await writer.bootstrap()
+        var damagedID: UUID?
+        for offset in 0..<500 {
+            let record = makeRecord(
+                query: "query \(offset)",
+                works: offset == 499 ? [makeWork()] : [],
+                date: Date(timeIntervalSince1970: TimeInterval(offset))
+            )
+            _ = try await writer.save(record)
+            if offset == 250 { damagedID = record.id }
+        }
+        let capturedDamagedID = try #require(damagedID)
+        try Data("broken".utf8).write(
+            to: root.appendingPathComponent("records/\(capturedDamagedID.uuidString).json")
+        )
+
+        let reader = SearchHistoryStore(root: root, legacyRoot: legacyRoot)
+        let startedAt = Date()
+        try await reader.bootstrap()
+        let index = try await reader.loadIndex()
+        let elapsed = Date().timeIntervalSince(startedAt)
+        print("Task 8 index-only bootstrap/load for 500 summaries: \(elapsed) seconds")
+
+        #expect(index.summaries.count == 500)
+        #expect(index.summaries.first?.displayQuery == "query 499")
+        #expect(index.summaries.last?.displayQuery == "query 0")
+        let newest = try #require(index.summaries.first)
+        #expect(try await reader.loadRecord(id: newest.id).snapshot.rankedWorks.count == 1)
     }
 
     @Test func useMutationIsSerializedAndPersistsMissingPaper() async throws {
@@ -87,25 +122,58 @@ import Testing
     @Test func legacyResetDeletesOnlyProjectsAndAutosaveOnce() async throws {
         let root = try makeTemporaryDirectory()
         let legacy = root.appendingPathComponent("SearchSession")
+        let fullText = root.appendingPathComponent("FullText")
+        let library = root.appendingPathComponent("Library")
+        let settings = root.appendingPathComponent("Settings")
         try FileManager.default.createDirectory(
             at: legacy.appendingPathComponent("Projects"),
             withIntermediateDirectories: true
         )
+        try FileManager.default.createDirectory(at: fullText, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: settings, withIntermediateDirectories: true)
         try Data("project".utf8).write(to: legacy.appendingPathComponent("Projects/index.json"))
         try Data("autosave".utf8).write(to: legacy.appendingPathComponent("online-search.json"))
-        try Data("keep".utf8).write(to: root.appendingPathComponent("library.json"))
+        let preservedURLs = [
+            legacy.appendingPathComponent("unrelated.json"),
+            fullText.appendingPathComponent("cached-work.json"),
+            library.appendingPathComponent("catalog.json"),
+            library.appendingPathComponent("paper.pdf"),
+            settings.appendingPathComponent("providers-and-api-keys.json"),
+            root.appendingPathComponent("preferences.json")
+        ]
+        for url in preservedURLs {
+            try Data("keep".utf8).write(to: url)
+        }
 
-        let store = SearchHistoryStore(
-            root: root.appendingPathComponent("SearchHistory"),
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        let firstLaunch = SearchHistoryStore(
+            root: historyRoot,
             legacyRoot: legacy
         )
-        try await store.bootstrap()
-        try Data("new legacy".utf8).write(to: legacy.appendingPathComponent("online-search.json"))
-        try await store.bootstrap()
-
+        try await firstLaunch.bootstrap()
         #expect(!FileManager.default.fileExists(atPath: legacy.appendingPathComponent("Projects").path))
+        #expect(!FileManager.default.fileExists(atPath: legacy.appendingPathComponent("online-search.json").path))
+        #expect(FileManager.default.fileExists(atPath: historyRoot.appendingPathComponent(".legacy-reset-v1").path))
+        #expect(try await firstLaunch.loadIndex().legacyResetVersion == 1)
+        for url in preservedURLs {
+            #expect(FileManager.default.fileExists(atPath: url.path))
+        }
+
+        try FileManager.default.createDirectory(
+            at: legacy.appendingPathComponent("Projects"),
+            withIntermediateDirectories: true
+        )
+        try Data("new project".utf8).write(to: legacy.appendingPathComponent("Projects/index.json"))
+        try Data("new legacy".utf8).write(to: legacy.appendingPathComponent("online-search.json"))
+        let restarted = SearchHistoryStore(root: historyRoot, legacyRoot: legacy)
+        try await restarted.bootstrap()
+
+        #expect(FileManager.default.fileExists(atPath: legacy.appendingPathComponent("Projects/index.json").path))
         #expect(FileManager.default.fileExists(atPath: legacy.appendingPathComponent("online-search.json").path))
-        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("library.json").path))
+        for url in preservedURLs {
+            #expect(FileManager.default.fileExists(atPath: url.path))
+        }
     }
 
     @Test func failedSaveLeavesPreviousRecordReadable() async throws {
