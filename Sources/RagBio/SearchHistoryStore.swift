@@ -42,13 +42,19 @@ actor SearchHistoryStore {
     // ponytail: zero in the app; nonzero only makes invalidation races deterministic in tests.
     private let persistenceDelay: Duration
     private let useReturnDelay: Duration
+    private let firstUsableReturnDelay: Duration
+    private let indexReturnDelay: Duration
     private(set) var isUseReturnDelayed = false
+    private(set) var isFirstUsableReturnDelayed = false
+    private(set) var isIndexReturnDelayed = false
 
     init(
         root customRoot: URL? = nil,
         legacyRoot customLegacyRoot: URL? = nil,
         persistenceDelay: Duration = .zero,
-        useReturnDelay: Duration = .zero
+        useReturnDelay: Duration = .zero,
+        firstUsableReturnDelay: Duration = .zero,
+        indexReturnDelay: Duration = .zero
     ) {
         let applicationRoot = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -63,6 +69,8 @@ actor SearchHistoryStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         self.persistenceDelay = persistenceDelay
         self.useReturnDelay = useReturnDelay
+        self.firstUsableReturnDelay = firstUsableReturnDelay
+        self.indexReturnDelay = indexReturnDelay
     }
 
     func bootstrap() throws {
@@ -87,8 +95,14 @@ actor SearchHistoryStore {
         try writeIndex(index)
     }
 
-    func loadIndex() throws -> SearchHistoryIndex {
-        try readIndexOrRebuild()
+    func loadIndex() async throws -> SearchHistoryIndex {
+        let index = try readIndexOrRebuild()
+        if indexReturnDelay != .zero {
+            isIndexReturnDelayed = true
+            try? await Task.sleep(for: indexReturnDelay)
+            isIndexReturnDelayed = false
+        }
+        return index
     }
 
     func loadRecord(id: UUID) throws -> SearchHistoryRecord {
@@ -196,7 +210,13 @@ actor SearchHistoryStore {
             snapshot: snapshot,
             useLedger: prior?.useLedger ?? UseLedger()
         )
-        return (record, try save(record))
+        let result = (record, try save(record))
+        if firstUsableReturnDelay != .zero {
+            isFirstUsableReturnDelayed = true
+            try? await Task.sleep(for: firstUsableReturnDelay)
+            isFirstUsableReturnDelayed = false
+        }
+        return result
     }
 
     func updateSnapshot(

@@ -447,6 +447,32 @@ final class SearchStore: ObservableObject {
         scanDecisions = decisions
     }
 
+    private func publishStageHistorySummaries(_ incoming: [SearchHistorySummary]) {
+        let useCounts = Dictionary(
+            uniqueKeysWithValues: historySummaries.map { ($0.id, $0.useCount) }
+        )
+        historySummaries = incoming.map { summary in
+            guard let useCount = useCounts[summary.id] else { return summary }
+            var merged = summary
+            merged.useCount = useCount
+            return merged
+        }
+    }
+
+    private func publishUseHistorySummaries(_ incoming: [SearchHistorySummary]) {
+        let useCounts = Dictionary(
+            uniqueKeysWithValues: incoming.map { ($0.id, $0.useCount) }
+        )
+        var seen = Set(historySummaries.map(\.id))
+        historySummaries = historySummaries.map { summary in
+            guard let useCount = useCounts[summary.id] else { return summary }
+            var merged = summary
+            merged.useCount = useCount
+            return merged
+        }
+        historySummaries.append(contentsOf: incoming.filter { seen.insert($0.id).inserted })
+    }
+
     private func scheduleCompletedStageSave() {
         guard let record = currentHistoryRecord else { return }
         let context = captureHistoryMutationContext()
@@ -490,11 +516,21 @@ final class SearchStore: ObservableObject {
                   mutationToken.isValid else { return }
             historyRevision = result.record.snapshot.revision
             currentHistoryID = result.record.id
-            currentHistoryRecord = result.record
-            historySummaries = result.index.summaries
+            let publishedRecord: SearchHistoryRecord
+            if let current = currentHistoryRecord,
+               current.id == result.record.id {
+                var merged = result.record
+                merged.useLedger = current.useLedger
+                currentHistoryRecord = merged
+                publishedRecord = merged
+            } else {
+                currentHistoryRecord = result.record
+                publishedRecord = result.record
+            }
+            publishStageHistorySummaries(result.index.summaries)
             isRefreshingHistory = false
             historyRefreshFallbackRecord = nil
-            applyUseLedgerToVisibleWorks(result.record.useLedger)
+            applyUseLedgerToVisibleWorks(publishedRecord.useLedger)
         } catch {
             guard generation == searchGeneration,
                   mutationToken.isValid else { return }
@@ -538,7 +574,7 @@ final class SearchStore: ObservableObject {
                 current.snapshot = record.snapshot
                 currentHistoryRecord = current
             }
-            historySummaries = index.summaries
+            publishStageHistorySummaries(index.summaries)
         } catch {
             guard expectedGeneration == searchGeneration,
                   mutationToken.isValid else { return }
@@ -700,7 +736,7 @@ final class SearchStore: ObservableObject {
                 current.useLedger = record.useLedger
                 currentHistoryRecord = current
             }
-            historySummaries = index.summaries
+            publishUseHistorySummaries(index.summaries)
             applyUseLedgerToVisibleWorks(record.useLedger)
             historyErrorMessage = nil
         } catch {

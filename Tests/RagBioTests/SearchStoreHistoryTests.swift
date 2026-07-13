@@ -320,6 +320,102 @@ import Testing
         #expect(!store.isRefreshingHistory)
     }
 
+    @Test func delayedFirstUsableReturnPreservesNewerVisibleUse() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession"),
+            firstUsableReturnDelay: .milliseconds(200)
+        )
+        try await historyStore.bootstrap()
+        let oldWork = makeWork()
+        let old = makeRecord(query: "gut", works: [oldWork], date: Date(timeIntervalSince1970: 1))
+        _ = try await historyStore.save(old)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(old.id)
+        let generation = await store.beginHistorySearch(displayQuery: "gut")
+        let newWork = makeWork(
+            id: "https://openalex.org/W2",
+            doi: "10.1000/new"
+        )
+        var staged = old
+        staged.snapshot.allWorks = [newWork]
+        staged.snapshot.rankedWorks = [newWork]
+        staged.snapshot.totalCount = 1
+        staged.snapshot.selectedWorkID = newWork.id
+        store.restoreHistoryRecord(staged)
+        let pendingFirstStage = Task { @MainActor in
+            await store.commitFirstUsableHistoryStage(
+                displayQuery: "gut",
+                startedAt: Date(timeIntervalSince1970: 10),
+                generation: generation
+            )
+        }
+        while await !historyStore.isFirstUsableReturnDelayed {
+            await Task.yield()
+        }
+
+        await store.setUse(true, for: oldWork)
+        await pendingFirstStage.value
+
+        let disk = try await historyStore.loadRecord(id: old.id)
+        #expect(disk.snapshot.revision == 1)
+        #expect(disk.snapshot.allWorks.map(\.shortID) == ["W2"])
+        #expect(disk.useLedger.contains(oldWork))
+        #expect(store.currentHistoryRecord?.snapshot.allWorks.map(\.shortID) == ["W2"])
+        #expect(store.currentHistoryRecord?.useLedger.contains(oldWork) == true)
+        #expect(store.decision(for: oldWork) == .use)
+        #expect(store.historySummaries.first(where: { $0.id == old.id })?.useCount == 1)
+    }
+
+    @Test func delayedUseIndexDoesNotRegressRefreshSummaryMetadata() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession"),
+            indexReturnDelay: .milliseconds(200)
+        )
+        try await historyStore.bootstrap()
+        let oldWork = makeWork()
+        let old = makeRecord(query: "gut", works: [oldWork], date: Date(timeIntervalSince1970: 1))
+        _ = try await historyStore.save(old)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(old.id)
+        let generation = await store.beginHistorySearch(displayQuery: "gut")
+        let newWorks = [
+            makeWork(id: "https://openalex.org/W2", doi: "10.1000/new-1"),
+            makeWork(id: "https://openalex.org/W3", doi: "10.1000/new-2")
+        ]
+        var staged = old
+        staged.snapshot.allWorks = newWorks
+        staged.snapshot.rankedWorks = newWorks
+        staged.snapshot.totalCount = newWorks.count
+        staged.snapshot.selectedWorkID = newWorks.first?.id
+        store.restoreHistoryRecord(staged)
+        let pendingUse = Task { @MainActor in
+            await store.setUse(true, for: oldWork)
+        }
+        while await !historyStore.isIndexReturnDelayed {
+            await Task.yield()
+        }
+
+        await store.commitFirstUsableHistoryStage(
+            displayQuery: "gut",
+            startedAt: Date(timeIntervalSince1970: 10),
+            generation: generation
+        )
+        await pendingUse.value
+
+        let disk = try await historyStore.loadRecord(id: old.id)
+        let summary = store.historySummaries.first { $0.id == old.id }
+        #expect(disk.snapshot.rankedWorks.count == 2)
+        #expect(disk.useLedger.contains(oldWork))
+        #expect(summary?.paperCount == 2)
+        #expect(summary?.lastSuccessfulSearchAt == disk.lastSuccessfulSearchAt)
+        #expect(summary?.displayQuery == disk.displayQuery)
+        #expect(summary?.useCount == 1)
+    }
+
     @Test func failedFirstUsableCommitRestoresOldMatchingRecord() async throws {
         let root = try makeTemporaryDirectory()
         let historyRoot = root.appendingPathComponent("SearchHistory")
