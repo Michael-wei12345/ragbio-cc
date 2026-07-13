@@ -396,6 +396,55 @@ import Testing
         #expect(saved.useLedger.contains(oldWork))
     }
 
+    @Test func failedFirstCommitReloadsConcurrentUseFromRollback() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        let historyStore = SearchHistoryStore(
+            root: historyRoot,
+            legacyRoot: root.appendingPathComponent("SearchSession"),
+            persistenceDelay: .milliseconds(200)
+        )
+        try await historyStore.bootstrap()
+        let oldWork = makeWork()
+        let old = makeRecord(query: "gut", works: [oldWork], date: Date())
+        _ = try await historyStore.save(old)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(old.id)
+        let generation = await store.beginHistorySearch(displayQuery: "gut")
+        let newWork = makeWork(id: "https://openalex.org/W2")
+        var staged = old
+        staged.snapshot.allWorks = [newWork]
+        staged.snapshot.rankedWorks = [newWork]
+        staged.snapshot.totalCount = 1
+        staged.snapshot.selectedWorkID = newWork.id
+        store.restoreHistoryRecord(staged)
+        let pending = Task { @MainActor in
+            await store.commitFirstUsableHistoryStage(
+                displayQuery: "gut",
+                startedAt: Date(),
+                generation: generation
+            )
+        }
+        await Task.yield()
+        try await Task.sleep(for: .milliseconds(25))
+
+        _ = try await historyStore.setUse(
+            historyID: old.id,
+            work: oldWork,
+            isUsed: true
+        )
+        try setHistoryPermissions(0o500, at: historyRoot)
+        await pending.value
+        try setHistoryPermissions(0o700, at: historyRoot)
+
+        let onDisk = try await historyStore.loadRecord(id: old.id)
+        #expect(onDisk.snapshot.allWorks.map(\.shortID) == ["W1"])
+        #expect(onDisk.useLedger.contains(oldWork))
+        #expect(store.currentHistoryRecord?.useLedger.contains(oldWork) == true)
+        #expect(store.decision(for: oldWork) == .use)
+        #expect(store.historyErrorMessage == "Search completed, but history could not be saved.")
+    }
+
     @Test func staleGenerationCannotCommitFirstUsableStage() async throws {
         let root = try makeTemporaryDirectory()
         let historyStore = SearchHistoryStore(

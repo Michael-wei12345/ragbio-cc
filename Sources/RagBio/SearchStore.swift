@@ -491,7 +491,14 @@ final class SearchStore: ObservableObject {
         } catch {
             guard generation == searchGeneration,
                   mutationToken.isValid else { return }
-            if let old = historyRefreshFallbackRecord {
+            let authoritative = try? await historyStore.record(
+                normalizedQuery: normalized
+            )
+            guard generation == searchGeneration,
+                  mutationToken.isValid else { return }
+            if let authoritative {
+                restoreHistoryRecord(authoritative)
+            } else if let old = historyRefreshFallbackRecord {
                 restoreHistoryRecord(old)
             }
             historyRefreshFallbackRecord = nil
