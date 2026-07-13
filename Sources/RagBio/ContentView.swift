@@ -239,8 +239,6 @@ private struct SearchHeader: View {
                 }
             }
 
-            ProjectBar(store: store)
-
             Picker("搜索模式", selection: $store.searchMode) {
                 ForEach(SearchMode.allCases) { mode in
                     Label(mode.title, systemImage: mode.icon).tag(mode)
@@ -422,125 +420,6 @@ private struct SearchHeader: View {
         case .ai:
             return "描述你想找什么，例如：近五年提高 CRISPR 脱靶检测灵敏度的方法"
         }
-    }
-}
-
-private struct ProjectBar: View {
-    @ObservedObject var store: SearchStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                Label(store.projectDisplayTitle, systemImage: "folder.badge.gearshape")
-                    .font(.caption.bold())
-                    .lineLimit(1)
-                Spacer()
-                Menu {
-                    Button("Pin Current Search as Project…") {
-                        if let name = promptForProjectName(
-                            title: "Pin Current Search as Project",
-                            defaultName: store.suggestedProjectName
-                        ) {
-                            store.pinCurrentSearchAsProject(named: name)
-                        }
-                    }
-                    .disabled(store.works.isEmpty)
-
-                    Menu("Open Project") {
-                        if store.projectSummaries.isEmpty {
-                            Text("No saved projects")
-                        } else {
-                            ForEach(store.projectSummaries) { project in
-                                Button {
-                                    store.openProject(project.id)
-                                } label: {
-                                    VStack(alignment: .leading) {
-                                        Text(project.name)
-                                        Text("\(project.paperCount) papers · \(project.query)")
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Divider()
-
-                    Button("Rename Project…") {
-                        if let summary = store.currentProjectSummary,
-                           let name = promptForProjectName(
-                               title: "Rename Project",
-                               defaultName: summary.name
-                           ) {
-                            store.renameCurrentProject(to: name)
-                        }
-                    }
-                    .disabled(store.currentProjectID == nil)
-
-                    Button("Duplicate Project…") {
-                        if let summary = store.currentProjectSummary,
-                           let name = promptForProjectName(
-                               title: "Duplicate Project",
-                               defaultName: "\(summary.name) Copy"
-                           ) {
-                            store.duplicateCurrentProject(named: name)
-                        }
-                    }
-                    .disabled(store.currentProjectID == nil)
-
-                    Button("Delete Project…", role: .destructive) {
-                        if let summary = store.currentProjectSummary,
-                           confirmProjectDeletion(summary.name) {
-                            store.deleteCurrentProject()
-                        }
-                    }
-                    .disabled(store.currentProjectID == nil)
-                } label: {
-                    Label("Projects", systemImage: "folder")
-                }
-                .menuStyle(.borderlessButton)
-                .font(.caption)
-            }
-            .foregroundStyle(.secondary)
-
-            if let error = store.projectErrorMessage {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-        }
-        .padding(8)
-        .background(
-            Color(nsColor: .controlBackgroundColor),
-            in: RoundedRectangle(cornerRadius: 8)
-        )
-    }
-
-    private func promptForProjectName(
-        title: String,
-        defaultName: String
-    ) -> String? {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = "Project names are stored locally with this search session."
-        alert.addButton(withTitle: "Save")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        field.stringValue = defaultName
-        alert.accessoryView = field
-        let response = alert.runModal()
-        guard response == .alertFirstButtonReturn else { return nil }
-        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? nil : name
-    }
-
-    private func confirmProjectDeletion(_ name: String) -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Delete Project?"
-        alert.informativeText = "This deletes “\(name)” from RagBio projects. The current search results can remain as autosaved state, but the named project file is removed."
-        alert.addButton(withTitle: "Delete")
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
     }
 }
 

@@ -67,7 +67,7 @@ final class SearchStore: ObservableObject {
     @Published var decisionFilter: ScanDecisionFilter = .all {
         didSet {
             guard decisionFilter != oldValue else { return }
-            saveOnlineSearchSession()
+            scheduleCompletedStageSave()
         }
     }
     @Published var currentFieldScanReport: FieldScanReport?
@@ -81,21 +81,23 @@ final class SearchStore: ObservableObject {
     }
     @Published var isGeneratingFieldScan = false
     @Published var fieldScanError: String?
-    @Published private(set) var projectSummaries: [OnlineSearchProjectSummary] = []
-    @Published private(set) var currentProjectID: UUID?
-    @Published private(set) var projectErrorMessage: String?
+    @Published private(set) var historySummaries: [SearchHistorySummary] = []
+    @Published private(set) var currentHistoryID: UUID?
+    @Published private(set) var currentHistoryRecord: SearchHistoryRecord?
+    @Published private(set) var historyErrorMessage: String?
+    @Published private(set) var isRefreshingHistory = false
+    @Published private(set) var exportMessage: String?
 
     private let client: OpenAlexClient
     private let pubMedClient = PubMedClient()
     private let fullTextService: FullTextService
     private let aiQueryPlanner: AIQueryPlanner
-    private let onlineSessionStore: OnlineSearchSessionStore
-    private let projectStore: OnlineSearchProjectStore
+    private let historyStore: SearchHistoryStore
     private var aiRankedWorks: [Work] = []
     private var aiEnhancementTask: Task<Void, Never>?
     private var searchGeneration = 0
     private var corpusAnalysisGeneration = 0
-    private var isRestoringSession = false
+    private var historyRevision = 0
     let pageSize = 20
     private let aiCandidateLimit = 50
     private let aiCandidatePageSize = 50
@@ -115,134 +117,70 @@ final class SearchStore: ObservableObject {
         client: OpenAlexClient = OpenAlexClient(),
         fullTextService: FullTextService = FullTextService(),
         aiQueryPlanner: AIQueryPlanner = AIQueryPlanner(),
-        onlineSessionStore: OnlineSearchSessionStore = OnlineSearchSessionStore(),
-        projectStore: OnlineSearchProjectStore = OnlineSearchProjectStore()
+        historyStore: SearchHistoryStore = SearchHistoryStore(),
+        restoreOnInit: Bool = true
     ) {
         self.client = client
         self.fullTextService = fullTextService
         self.aiQueryPlanner = aiQueryPlanner
-        self.onlineSessionStore = onlineSessionStore
-        self.projectStore = projectStore
-        projectSummaries = projectStore.loadIndex().projects
-        if let project = projectStore.loadLastOpenedProject() {
-            restoreSession(project.session, project: project)
-        } else {
-            restoreOnlineSearchSessionIfAvailable()
+        self.historyStore = historyStore
+        if restoreOnInit {
+            Task { await loadInitialHistory() }
         }
     }
 
-    private func restoreOnlineSearchSessionIfAvailable() {
-        guard let snapshot = onlineSessionStore.load(),
-              !snapshot.works.isEmpty,
-              !snapshot.lastQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return
+    func loadInitialHistory() async {
+        do {
+            try await historyStore.bootstrap()
+            let index = try await historyStore.loadIndex()
+            historySummaries = index.summaries
+            guard let id = index.lastOpenedHistoryID else { return }
+            await openHistory(id)
+        } catch {
+            historyErrorMessage = error.localizedDescription
         }
-        restoreSession(snapshot, project: nil)
     }
 
-    private func restoreSession(
-        _ snapshot: OnlineSearchSessionSnapshot,
-        project: OnlineSearchProject?
-    ) {
-        isRestoringSession = true
-        defer { isRestoringSession = false }
+    func openHistory(_ id: UUID) async {
         aiEnhancementTask?.cancel()
         aiEnhancementTask = nil
         searchGeneration &+= 1
-        corpusAnalysisGeneration &+= 1
-        query = snapshot.query
-        searchMode = snapshot.searchMode
-        sort = snapshot.sort
-        fromYearEnabled = snapshot.fromYearEnabled
-        fromYear = snapshot.fromYear
-        openAccessOnly = snapshot.openAccessOnly
-        works = snapshot.works
-        aiRankedWorks = snapshot.aiRankedWorks
-        if searchMode == .ai, aiRankedWorks.isEmpty {
-            aiRankedWorks = snapshot.works
-        }
-        totalCount = max(snapshot.totalCount, searchMode == .ai ? aiRankedWorks.count : works.count)
-        currentPage = max(1, snapshot.currentPage)
-        lastQuery = snapshot.lastQuery
-        evidence = EvidenceExtractor.extract(query: snapshot.lastQuery, works: snapshot.works)
-        if let selectedWorkID = snapshot.selectedWorkID,
-           snapshot.works.contains(where: { $0.id == selectedWorkID }) {
-            selection = selectedWorkID
-        } else {
-            selection = snapshot.works.first?.id
-        }
-
-        fullTextState = .idle
-        fullTextDocument = nil
-        passageHits = []
-        passageQuery = snapshot.lastQuery
-        corpusState = .idle
-        corpusDocuments = [:]
-        corpusHits = []
         isLoading = false
-        errorMessage = nil
-
-        lastAIPlan = snapshot.lastAIPlan
-        aiReasons = snapshot.aiReasons
-        aiScores = snapshot.aiScores
-        aiEvidenceLevels = snapshot.aiEvidenceLevels
-        aiSearchNotice = snapshot.aiSearchNotice
-        fullTextReviewSummaries = snapshot.fullTextReviewSummaries
-        scanDecisions = snapshot.scanDecisions ?? [:]
-        currentEvidenceTable = snapshot.currentEvidenceTable
-        let restoredFilter = snapshot.decisionFilter ?? .all
-        decisionFilter = restoredFilter == .use ? .use : .all
-        currentFieldScanReport = snapshot.currentFieldScanReport
-        isGeneratingFieldScan = false
-        fieldScanError = nil
-        fullTextReviewSummaryInProgress = []
-        fullTextReviewSummaryErrors = [:]
-        aiVisiblePageFullTextInProgress = []
-        aiVisiblePageFullTextFailures = [:]
-        aiRerankState = restoredAIRerankState(from: snapshot)
-        aiSecondRerankState = restoredAISecondRerankState(from: snapshot)
-        currentProjectID = project?.id
-        projectErrorMessage = nil
-        if let project {
-            projectStore.setLastOpenedProjectID(project.id)
-            searchTimingSummary = "已打开项目：\(project.name) · \(restoredSessionTime(project.updatedAt))"
-        } else {
-            searchTimingSummary = "已恢复上次在线搜索 · \(restoredSessionTime(snapshot.savedAt))"
-        }
-    }
-
-    private func saveOnlineSearchSession() {
-        guard !isRestoringSession,
-              let snapshot = makeCurrentSessionSnapshot() else {
-            return
-        }
-        onlineSessionStore.save(snapshot)
-        guard let currentProjectID else { return }
+        isRefreshingHistory = false
         do {
-            _ = try projectStore.updateProject(id: currentProjectID, session: snapshot)
-            refreshProjectSummaries()
+            let record = try await historyStore.loadRecord(id: id)
+            restoreHistoryRecord(record)
+            let index = try await historyStore.setLastOpened(id)
+            historySummaries = index.summaries
+            historyErrorMessage = nil
         } catch {
-            projectErrorMessage = error.localizedDescription
+            historyErrorMessage = error.localizedDescription
         }
     }
 
-    private func makeCurrentSessionSnapshot() -> OnlineSearchSessionSnapshot? {
-        guard !works.isEmpty,
-              !lastQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
+    func deleteHistory(_ id: UUID) async {
+        do {
+            let index = try await historyStore.delete(id: id)
+            historySummaries = index.summaries
+            guard currentHistoryID == id else { return }
+            clearVisibleSearch()
+            historyErrorMessage = nil
+        } catch {
+            historyErrorMessage = error.localizedDescription
         }
-        return OnlineSearchSessionSnapshot(
-            version: OnlineSearchSessionSnapshot.currentVersion,
-            savedAt: Date(),
-            query: query,
-            lastQuery: lastQuery,
-            searchMode: searchMode,
+    }
+
+    func makeHistorySnapshot(displayQuery: String, revision: Int) -> SearchHistorySnapshot {
+        SearchHistorySnapshot(
+            revision: revision,
+            displayQuery: displayQuery,
+            retrievalQuery: lastQuery,
             sort: sort,
             fromYearEnabled: fromYearEnabled,
             fromYear: fromYear,
             openAccessOnly: openAccessOnly,
-            works: works,
-            aiRankedWorks: aiRankedWorks,
+            allWorks: works,
+            rankedWorks: aiRankedWorks,
             totalCount: totalCount,
             currentPage: currentPage,
             selectedWorkID: selection,
@@ -251,12 +189,184 @@ final class SearchStore: ObservableObject {
             aiScores: aiScores,
             aiEvidenceLevels: aiEvidenceLevels,
             aiSearchNotice: aiSearchNotice,
+            pubMedNotice: pubMedNotice,
+            searchTimingSummary: searchTimingSummary,
             fullTextReviewSummaries: fullTextReviewSummaries,
-            scanDecisions: scanDecisions,
+            articleSummaries: articleSummaries,
             currentEvidenceTable: currentEvidenceTable,
-            decisionFilter: decisionFilter,
             currentFieldScanReport: currentFieldScanReport
         )
+    }
+
+    func restoreHistoryRecord(_ record: SearchHistoryRecord) {
+        let snapshot = record.snapshot
+        query = record.displayQuery
+        searchMode = .ai
+        sort = snapshot.sort
+        fromYearEnabled = snapshot.fromYearEnabled
+        fromYear = snapshot.fromYear
+        openAccessOnly = snapshot.openAccessOnly
+        works = snapshot.allWorks
+        aiRankedWorks = snapshot.rankedWorks
+        totalCount = snapshot.totalCount
+        currentPage = snapshot.currentPage
+        selection = snapshot.selectedWorkID
+        lastQuery = snapshot.retrievalQuery
+        lastAIPlan = snapshot.lastAIPlan
+        aiReasons = snapshot.aiReasons
+        aiScores = snapshot.aiScores
+        aiEvidenceLevels = snapshot.aiEvidenceLevels
+        aiSearchNotice = snapshot.aiSearchNotice
+        pubMedNotice = snapshot.pubMedNotice
+        searchTimingSummary = snapshot.searchTimingSummary
+        fullTextReviewSummaries = snapshot.fullTextReviewSummaries
+        articleSummaries = snapshot.articleSummaries
+        currentEvidenceTable = snapshot.currentEvidenceTable
+        currentFieldScanReport = snapshot.currentFieldScanReport
+        currentHistoryID = record.id
+        currentHistoryRecord = record
+        historyRevision = snapshot.revision
+        decisionFilter = decisionFilter == .use ? .use : .all
+        applyUseLedgerToVisibleWorks(record.useLedger)
+        evidence = EvidenceExtractor.extract(query: snapshot.retrievalQuery, works: works)
+        fullTextState = .idle
+        fullTextDocument = nil
+        passageHits = []
+        passageQuery = snapshot.retrievalQuery
+        corpusState = .idle
+        corpusDocuments = [:]
+        corpusHits = []
+        isLoading = false
+        errorMessage = nil
+        isGeneratingFieldScan = false
+        fieldScanError = nil
+        fullTextReviewSummaryInProgress = []
+        fullTextReviewSummaryErrors = [:]
+        aiVisiblePageFullTextInProgress = []
+        aiVisiblePageFullTextFailures = [:]
+        aiRerankState = .completed(
+            candidates: max(snapshot.totalCount, snapshot.rankedWorks.count),
+            retained: snapshot.rankedWorks.count
+        )
+        let levels = snapshot.aiEvidenceLevels.values
+        let fullText = levels.filter { $0.contains("全文") }.count
+        let abstractOnly = levels.filter { $0.contains("摘要") }.count
+        aiSecondRerankState = fullText + abstractOnly == 0
+            ? .idle
+            : .completed(
+                fullText: fullText,
+                abstractOnly: abstractOnly,
+                retained: snapshot.rankedWorks.count
+            )
+    }
+
+    private func clearVisibleSearch() {
+        aiEnhancementTask?.cancel()
+        aiEnhancementTask = nil
+        searchGeneration &+= 1
+        corpusAnalysisGeneration &+= 1
+        query = ""
+        works = []
+        aiRankedWorks = []
+        totalCount = 0
+        currentPage = 1
+        selection = nil
+        lastQuery = ""
+        evidence = []
+        isLoading = false
+        errorMessage = nil
+        lastAIPlan = nil
+        aiRerankState = .idle
+        aiSecondRerankState = .idle
+        aiReasons = [:]
+        aiScores = [:]
+        aiEvidenceLevels = [:]
+        aiSearchNotice = nil
+        pubMedNotice = nil
+        searchTimingSummary = nil
+        fullTextState = .idle
+        fullTextDocument = nil
+        passageHits = []
+        passageQuery = ""
+        corpusState = .idle
+        corpusDocuments = [:]
+        corpusHits = []
+        aiFullTextDocuments = [:]
+        fullTextReviewSummaries = [:]
+        fullTextReviewSummaryInProgress = []
+        fullTextReviewSummaryErrors = [:]
+        articleSummaries = [:]
+        articleSummaryInProgress = []
+        articleSummaryErrors = [:]
+        aiVisiblePageFullTextInProgress = []
+        aiVisiblePageFullTextFailures = [:]
+        translatedWorkIDs = []
+        translatedTitles = [:]
+        translatedAbstracts = [:]
+        translatedEvidence = [:]
+        translatedPassages = [:]
+        scanDecisions = [:]
+        currentEvidenceTable = nil
+        currentFieldScanReport = nil
+        fieldSummary = nil
+        isGeneratingFieldScan = false
+        isGeneratingFieldSummary = false
+        fieldScanError = nil
+        fieldSummaryError = nil
+        currentHistoryID = nil
+        currentHistoryRecord = nil
+        historyRevision = 0
+        isRefreshingHistory = false
+        decisionFilter = .all
+    }
+
+    private func applyUseLedgerToVisibleWorks(_ ledger: UseLedger) {
+        scanDecisions = Dictionary(
+            uniqueKeysWithValues: ledger.papers.map { paper in
+                (
+                    paper.work.id,
+                    ScanDecisionRecord(
+                        workID: paper.work.id,
+                        decision: .use,
+                        note: nil,
+                        updatedAt: paper.selectedAt
+                    )
+                )
+            }
+        )
+    }
+
+    private func scheduleCompletedStageSave() {
+        guard let record = currentHistoryRecord else { return }
+        let generation = searchGeneration
+        historyRevision &+= 1
+        let snapshot = makeHistorySnapshot(
+            displayQuery: record.displayQuery,
+            revision: historyRevision
+        )
+        Task { [weak self] in
+            await self?.persistCurrentStage(snapshot, expectedGeneration: generation)
+        }
+    }
+
+    func persistCurrentStage(
+        _ snapshot: SearchHistorySnapshot,
+        expectedGeneration: Int
+    ) async {
+        guard expectedGeneration == searchGeneration,
+              let historyID = currentHistoryID else { return }
+        do {
+            let record = try await historyStore.updateSnapshot(
+                historyID: historyID,
+                snapshot: snapshot
+            )
+            guard expectedGeneration == searchGeneration else { return }
+            currentHistoryRecord = record
+            let index = try await historyStore.loadIndex()
+            historySummaries = index.summaries
+        } catch {
+            historyErrorMessage = "Search completed, but history could not be saved."
+        }
     }
 
     private func resetScanArtifactsForNewSearch() {
@@ -267,162 +377,6 @@ final class SearchStore: ObservableObject {
         fieldSummary = nil
         fieldSummaryError = nil
         decisionFilter = .all
-    }
-
-    var currentProjectSummary: OnlineSearchProjectSummary? {
-        guard let currentProjectID else { return nil }
-        return projectSummaries.first { $0.id == currentProjectID }
-    }
-
-    var projectDisplayTitle: String {
-        if let currentProjectSummary {
-            return "Project: \(currentProjectSummary.name)"
-        }
-        return "Autosaved Search"
-    }
-
-    var suggestedProjectName: String {
-        let source = lastQuery.isEmpty ? query : lastQuery
-        let clean = source.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return "Untitled Research Scan" }
-        let prefix = clean.prefix(64)
-        if let lastSpace = prefix.lastIndex(of: " ") {
-            return String(prefix[..<lastSpace])
-        }
-        return String(prefix)
-    }
-
-    func refreshProjectSummaries() {
-        projectSummaries = projectStore.loadIndex().projects
-    }
-
-    func pinCurrentSearchAsProject(named name: String? = nil) {
-        guard let snapshot = makeCurrentSessionSnapshot() else {
-            projectErrorMessage = "当前没有可保存为项目的在线检索。"
-            return
-        }
-        do {
-            let project = try projectStore.createProject(
-                name: name ?? suggestedProjectName,
-                session: snapshot
-            )
-            currentProjectID = project.id
-            refreshProjectSummaries()
-            onlineSessionStore.save(project.session)
-            projectErrorMessage = nil
-            searchTimingSummary = "已保存项目：\(project.name)"
-        } catch {
-            projectErrorMessage = error.localizedDescription
-        }
-    }
-
-    func openProject(_ id: UUID) {
-        do {
-            let project = try projectStore.loadProject(id: id)
-            restoreSession(project.session, project: project)
-            refreshProjectSummaries()
-            onlineSessionStore.save(project.session)
-        } catch {
-            projectErrorMessage = error.localizedDescription
-        }
-    }
-
-    func renameProject(_ id: UUID, to name: String) {
-        do {
-            let project = try projectStore.renameProject(id: id, name: name)
-            refreshProjectSummaries()
-            currentProjectID = project.id
-            projectErrorMessage = nil
-            searchTimingSummary = "已重命名项目：\(project.name)"
-        } catch {
-            projectErrorMessage = error.localizedDescription
-        }
-    }
-
-    func renameCurrentProject(to name: String) {
-        guard let currentProjectID else {
-            projectErrorMessage = "当前打开的是 Autosaved Search，不是命名项目。"
-            return
-        }
-        renameProject(currentProjectID, to: name)
-    }
-
-    func duplicateProject(_ id: UUID, named name: String? = nil) {
-        do {
-            let project = try projectStore.duplicateProject(id: id, name: name)
-            restoreSession(project.session, project: project)
-            refreshProjectSummaries()
-            onlineSessionStore.save(project.session)
-            projectErrorMessage = nil
-            searchTimingSummary = "已复制并打开项目：\(project.name)"
-        } catch {
-            projectErrorMessage = error.localizedDescription
-        }
-    }
-
-    func duplicateCurrentProject(named name: String? = nil) {
-        guard let currentProjectID else {
-            projectErrorMessage = "当前打开的是 Autosaved Search，不是命名项目。"
-            return
-        }
-        duplicateProject(currentProjectID, named: name)
-    }
-
-    func deleteProject(_ id: UUID) {
-        do {
-            try projectStore.deleteProject(id: id)
-            if currentProjectID == id {
-                currentProjectID = nil
-                projectStore.setLastOpenedProjectID(nil)
-                searchTimingSummary = "项目已删除；当前搜索保留为 Autosaved Search。"
-            }
-            refreshProjectSummaries()
-            projectErrorMessage = nil
-            if let snapshot = makeCurrentSessionSnapshot() {
-                onlineSessionStore.save(snapshot)
-            }
-        } catch {
-            projectErrorMessage = error.localizedDescription
-        }
-    }
-
-    func deleteCurrentProject() {
-        guard let currentProjectID else {
-            projectErrorMessage = "当前打开的是 Autosaved Search，不是命名项目。"
-            return
-        }
-        deleteProject(currentProjectID)
-    }
-
-    private func restoredAIRerankState(
-        from snapshot: OnlineSearchSessionSnapshot
-    ) -> AIRerankState {
-        guard snapshot.searchMode == .ai else { return .idle }
-        let retained = snapshot.aiRankedWorks.isEmpty
-            ? snapshot.works.count
-            : snapshot.aiRankedWorks.count
-        return .completed(candidates: max(snapshot.totalCount, retained), retained: retained)
-    }
-
-    private func restoredAISecondRerankState(
-        from snapshot: OnlineSearchSessionSnapshot
-    ) -> AISecondRerankState {
-        guard snapshot.searchMode == .ai else { return .idle }
-        let levels = snapshot.aiEvidenceLevels.values
-        let fullText = levels.filter { $0.contains("全文") }.count
-        let abstractOnly = levels.filter { $0.contains("摘要") }.count
-        guard fullText + abstractOnly > 0 else { return .idle }
-        let retained = snapshot.aiRankedWorks.isEmpty
-            ? snapshot.works.count
-            : snapshot.aiRankedWorks.count
-        return .completed(fullText: fullText, abstractOnly: abstractOnly, retained: retained)
-    }
-
-    private func restoredSessionTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
     }
 
     var selectedWork: Work? {
@@ -531,14 +485,14 @@ final class SearchStore: ObservableObject {
         )
         currentEvidenceTable = nil
         currentFieldScanReport = nil
-        saveOnlineSearchSession()
+        scheduleCompletedStageSave()
     }
 
     func clearScanDecision(for work: Work) {
         scanDecisions.removeValue(forKey: work.id)
         currentEvidenceTable = nil
         currentFieldScanReport = nil
-        saveOnlineSearchSession()
+        scheduleCompletedStageSave()
     }
 
     func decision(for work: Work) -> ScanDecision {
@@ -562,7 +516,7 @@ final class SearchStore: ObservableObject {
         currentEvidenceTable = table
         currentFieldScanReport = nil
         fieldScanError = nil
-        saveOnlineSearchSession()
+        scheduleCompletedStageSave()
     }
 
     func exportEvidenceTableMarkdown() {
@@ -612,7 +566,7 @@ final class SearchStore: ObservableObject {
             )
             guard generation == searchGeneration else { return }
             currentFieldScanReport = report
-            saveOnlineSearchSession()
+            scheduleCompletedStageSave()
         } catch {
             guard generation == searchGeneration else { return }
             fieldScanError = error.localizedDescription
@@ -1291,7 +1245,7 @@ final class SearchStore: ObservableObject {
                 fullTextReviewSummaries[input.work.id] = fallback(input)
                 fullTextReviewSummaryErrors[input.work.id] = "No AI provider is configured; showing a local full-text draft."
             }
-            saveOnlineSearchSession()
+            scheduleCompletedStageSave()
             return
         }
 
@@ -1320,7 +1274,7 @@ final class SearchStore: ObservableObject {
                 fullTextReviewSummaryErrors[input.work.id] = "AI summary failed; showing a local full-text draft: \(error.localizedDescription)"
             }
         }
-        saveOnlineSearchSession()
+        scheduleCompletedStageSave()
     }
 
     private func normalizedSummary(
@@ -1451,7 +1405,7 @@ final class SearchStore: ObservableObject {
                 searchTimingSummary = "OpenAlex \(elapsedSeconds(since: searchStartedAt)) 秒 · 已显示 \(response.results.count) 篇"
             }
             analyzeVisiblePageInBackground()
-            saveOnlineSearchSession()
+            scheduleCompletedStageSave()
         } catch is CancellationError {
             return
         } catch {
@@ -2042,7 +1996,7 @@ final class SearchStore: ObservableObject {
         corpusState = .idle
         corpusDocuments = [:]
         corpusHits = []
-        saveOnlineSearchSession()
+        scheduleCompletedStageSave()
         if analyze {
             await analyzeCurrentPage()
         }
@@ -2142,7 +2096,7 @@ final class SearchStore: ObservableObject {
                 for: fullTextPairs,
                 configuration: configuration
             )
-            self.saveOnlineSearchSession()
+            self.scheduleCompletedStageSave()
         }
     }
 
@@ -2245,7 +2199,7 @@ final class SearchStore: ObservableObject {
         fullTextDocument = nil
         passageHits = []
         passageQuery = lastQuery
-        saveOnlineSearchSession()
+        scheduleCompletedStageSave()
     }
 
     func loadFullText(for work: Work, forceRefresh: Bool = false) async {
@@ -2291,7 +2245,7 @@ final class SearchStore: ObservableObject {
             }
             fullTextState = .loaded
             searchPassages()
-            saveOnlineSearchSession()
+            scheduleCompletedStageSave()
         } catch is CancellationError {
             if selection == work.id {
                 fullTextState = .idle
@@ -2339,7 +2293,7 @@ final class SearchStore: ObservableObject {
         aiFullTextDocuments[work.id] = document
         fullTextState = .loaded
         searchPassages()
-        saveOnlineSearchSession()
+        scheduleCompletedStageSave()
     }
 
     func importPDF(for work: Work) async {
@@ -2362,7 +2316,7 @@ final class SearchStore: ObservableObject {
             )
             fullTextState = .loaded
             searchPassages()
-            saveOnlineSearchSession()
+            scheduleCompletedStageSave()
         } catch {
             fullTextState = .failed(error.localizedDescription)
         }
