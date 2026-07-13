@@ -186,8 +186,8 @@ final class SearchStore: ObservableObject {
         var records: [SearchHistoryRecord] = []
         for id in ids {
             try Task.checkCancellation()
-            if let record = try? await historyStore.loadRecord(id: id),
-               !record.useLedger.papers.isEmpty {
+            let record = try await historyStore.loadRecord(id: id)
+            if !record.useLedger.papers.isEmpty {
                 records.append(record)
             }
             try Task.checkCancellation()

@@ -17,6 +17,15 @@ import Testing
         )
     }
 
+    @Test func DOIReservedCharactersAreEncodedInsideTheCanonicalPath() {
+        let work = makeWork(doi: "10.1000/A?B#C/D")
+
+        #expect(
+            SearchHistoryURLResolver.url(for: work)?.absoluteString
+                == "https://doi.org/10.1000/a%3Fb%23c/d"
+        )
+    }
+
     @Test func URLPriorityFallsBackToPubMed() {
         let work = makeWork(doi: nil, pmid: "123")
 
@@ -70,6 +79,42 @@ import Testing
         #expect(SearchHistoryURLResolver.url(for: work) == nil)
     }
 
+    @Test func PMIDRequiresASCIIDigits() {
+        let work = makeWork(
+            id: "not-an-openalex-id",
+            doi: nil,
+            pmid: "١٢٣",
+            publisherURL: nil
+        )
+
+        #expect(SearchHistoryURLResolver.url(for: work) == nil)
+    }
+
+    @Test func foreignURLWithWorkShapedTailIsNotAnOpenAlexIdentifier() {
+        let work = makeWork(
+            id: "https://foreign.example/works/W123",
+            doi: nil,
+            pmid: nil,
+            publisherURL: nil
+        )
+
+        #expect(SearchHistoryURLResolver.url(for: work) == nil)
+    }
+
+    @Test func bareOpenAlexIdentifierStillResolves() {
+        let work = makeWork(
+            id: "w123",
+            doi: nil,
+            pmid: nil,
+            publisherURL: nil
+        )
+
+        #expect(
+            SearchHistoryURLResolver.url(for: work)?.absoluteString
+                == "https://openalex.org/W123"
+        )
+    }
+
     @Test func malformedLandingPageWithWhitespaceIsRejected() {
         let work = makeWork(
             id: "not-an-openalex-id",
@@ -85,6 +130,7 @@ import Testing
         "https://publisher.example/paper.pdf",
         "https://publisher.example/paper.PDF?download=1",
         "https://publisher.example/paper.pdf#page=2",
+        "https://publisher.example/paper.pdf;download=1",
         "https://doi.org/10.1000/example",
         "https://api.openalex.org/works/W1"
     ])
@@ -149,6 +195,63 @@ import Testing
             document.text.components(
                 separatedBy: "https://publisher.example/article"
             ).count - 1 == 2
+        )
+    }
+
+    @Test func publisherCanonicalizationDrivesOutputAndDeduplication() {
+        var ledger = UseLedger()
+        ledger.mark(makeWork(
+            id: "https://openalex.org/W21",
+            doi: nil,
+            pmid: nil,
+            title: "First fragment",
+            publisherURL: "https://EXAMPLE.com:443/article#abstract"
+        ))
+        ledger.mark(makeWork(
+            id: "https://openalex.org/W22",
+            doi: nil,
+            pmid: nil,
+            title: "Second fragment",
+            publisherURL: "https://example.com/article#methods"
+        ))
+        let record = makeRecord(
+            query: "canonical",
+            works: [],
+            date: Date(timeIntervalSince1970: 1),
+            useLedger: ledger
+        )
+
+        let document = SearchHistoryExportBuilder.make(records: [record])
+
+        #expect(document.urlCount == 1)
+        #expect(
+            document.text.components(separatedBy: "https://example.com/article").count - 1
+                == 1
+        )
+        #expect(!document.text.contains("#"))
+    }
+
+    @Test func publisherCanonicalizationNormalizesRootAndEncodingButPreservesQuery() {
+        let root = makeWork(
+            id: "",
+            doi: nil,
+            pmid: nil,
+            publisherURL: "HTTPS://EXAMPLE.com:443#section"
+        )
+        let encoded = makeWork(
+            id: "",
+            doi: nil,
+            pmid: nil,
+            publisherURL: "https://EXAMPLE.com/caf%c3%a9?view=full#section"
+        )
+
+        #expect(
+            SearchHistoryURLResolver.url(for: root)?.absoluteString
+                == "https://example.com/"
+        )
+        #expect(
+            SearchHistoryURLResolver.url(for: encoded)?.absoluteString
+                == "https://example.com/caf%C3%A9?view=full"
         )
     }
 
@@ -227,6 +330,46 @@ import Testing
         #expect(document.urlCount == 1)
         #expect(document.text.contains("Query: eligible"))
         #expect(!document.text.contains("Query: empty"))
+    }
+
+    @Test func corruptSelectedRecordFailsWithoutReturningPartialExport() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        let historyStore = SearchHistoryStore(
+            root: historyRoot,
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        var ledger = UseLedger()
+        ledger.mark(makeWork())
+        let valid = makeRecord(
+            query: "valid",
+            works: [],
+            date: Date(timeIntervalSince1970: 1),
+            useLedger: ledger
+        )
+        let corrupt = makeRecord(
+            query: "corrupt",
+            works: [],
+            date: Date(timeIntervalSince1970: 2),
+            useLedger: ledger
+        )
+        _ = try await historyStore.save(valid)
+        _ = try await historyStore.save(corrupt)
+        try Data("not json".utf8).write(
+            to: historyRoot
+                .appendingPathComponent("records")
+                .appendingPathComponent("\(corrupt.id.uuidString).json"),
+            options: .atomic
+        )
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+
+        do {
+            _ = try await store.loadExportRecords(ids: [valid.id, corrupt.id])
+            Issue.record("A partial export was returned for a corrupt selection")
+        } catch SearchHistoryStoreError.corruptRecord {
+            // Expected.
+        }
     }
 
     @Test func cancelledRecordLoadDoesNotReturnADocument() async throws {
