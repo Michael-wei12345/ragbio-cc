@@ -336,6 +336,13 @@ private struct SearchHeader: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            if let historyError = store.historyErrorMessage {
+                Label(historyError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if let notice = store.aiSearchNotice {
                 let isWarning = notice.contains("失败")
                     || notice.contains("超时")

@@ -113,6 +113,12 @@ final class SearchStore: ObservableObject {
         order: Int
     )
 
+    struct HistoryMutationContext: Equatable {
+        let searchGeneration: Int
+        let corpusGeneration: Int
+        let historyID: UUID?
+    }
+
     init(
         client: OpenAlexClient = OpenAlexClient(),
         fullTextService: FullTextService = FullTextService(),
@@ -142,9 +148,7 @@ final class SearchStore: ObservableObject {
     }
 
     func openHistory(_ id: UUID) async {
-        aiEnhancementTask?.cancel()
-        aiEnhancementTask = nil
-        searchGeneration &+= 1
+        invalidateAsyncWork()
         isLoading = false
         isRefreshingHistory = false
         do {
@@ -260,11 +264,33 @@ final class SearchStore: ObservableObject {
             )
     }
 
-    private func clearVisibleSearch() {
+    func captureHistoryMutationContext() -> HistoryMutationContext {
+        HistoryMutationContext(
+            searchGeneration: searchGeneration,
+            corpusGeneration: corpusAnalysisGeneration,
+            historyID: currentHistoryID
+        )
+    }
+
+    func isCurrentHistoryMutationContext(_ context: HistoryMutationContext) -> Bool {
+        context.searchGeneration == searchGeneration
+            && context.historyID == currentHistoryID
+    }
+
+    private func isCurrentCorpusMutationContext(_ context: HistoryMutationContext) -> Bool {
+        isCurrentHistoryMutationContext(context)
+            && context.corpusGeneration == corpusAnalysisGeneration
+    }
+
+    private func invalidateAsyncWork() {
         aiEnhancementTask?.cancel()
         aiEnhancementTask = nil
         searchGeneration &+= 1
         corpusAnalysisGeneration &+= 1
+    }
+
+    private func clearVisibleSearch() {
+        invalidateAsyncWork()
         query = ""
         works = []
         aiRankedWorks = []
@@ -338,14 +364,19 @@ final class SearchStore: ObservableObject {
 
     private func scheduleCompletedStageSave() {
         guard let record = currentHistoryRecord else { return }
-        let generation = searchGeneration
+        let context = captureHistoryMutationContext()
         historyRevision &+= 1
         let snapshot = makeHistorySnapshot(
             displayQuery: record.displayQuery,
             revision: historyRevision
         )
         Task { [weak self] in
-            await self?.persistCurrentStage(snapshot, expectedGeneration: generation)
+            guard let self,
+                  self.isCurrentHistoryMutationContext(context) else { return }
+            await self.persistCurrentStage(
+                snapshot,
+                expectedGeneration: context.searchGeneration
+            )
         }
     }
 
@@ -1167,10 +1198,12 @@ final class SearchStore: ObservableObject {
 
     func ensureFullTextReviewSummary(for work: Work) async {
         guard let document = availableFullTextDocument(for: work) else { return }
+        let context = captureHistoryMutationContext()
         let configuration = AIProviderConfiguration.load(activeAIProvider)
         await generateFullTextReviewSummaries(
             [AIFullTextSummaryInput(work: work, document: document)],
-            configuration: configuration
+            configuration: configuration,
+            context: context
         )
     }
 
@@ -1181,6 +1214,7 @@ final class SearchStore: ObservableObject {
               !articleSummaryInProgress.contains(work.id),
               let document = availableFullTextDocument(for: work),
               document.source.isFullText else { return }
+        let context = captureHistoryMutationContext()
         let configuration = AIProviderConfiguration.load(activeAIProvider)
         guard configuration.isConfigured else {
             articleSummaryErrors[work.id] = "No AI provider is configured."
@@ -1188,15 +1222,22 @@ final class SearchStore: ObservableObject {
         }
         articleSummaryInProgress.insert(work.id)
         articleSummaryErrors.removeValue(forKey: work.id)
-        defer { articleSummaryInProgress.remove(work.id) }
+        defer {
+            if isCurrentHistoryMutationContext(context) {
+                articleSummaryInProgress.remove(work.id)
+            }
+        }
         do {
             let note = try await aiQueryPlanner.articleExtractionNote(
                 work: work,
                 document: document,
                 configuration: configuration
             )
+            guard isCurrentHistoryMutationContext(context) else { return }
             articleSummaries[work.id] = note
+            scheduleCompletedStageSave()
         } catch {
+            guard isCurrentHistoryMutationContext(context) else { return }
             articleSummaryErrors[work.id] = error.localizedDescription
         }
     }
@@ -1210,15 +1251,23 @@ final class SearchStore: ObservableObject {
             .filter { !fullTextReviewSummaryInProgress.contains($0.work.id) }
             .map { AIFullTextSummaryInput(work: $0.work, document: $0.document) }
         guard !inputs.isEmpty else { return }
+        let context = captureHistoryMutationContext()
         Task {
-            await generateFullTextReviewSummaries(inputs, configuration: configuration)
+            guard isCurrentHistoryMutationContext(context) else { return }
+            await generateFullTextReviewSummaries(
+                inputs,
+                configuration: configuration,
+                context: context
+            )
         }
     }
 
     private func generateFullTextReviewSummaries(
         _ inputs: [AIFullTextSummaryInput],
-        configuration: AIProviderConfiguration
+        configuration: AIProviderConfiguration,
+        context: HistoryMutationContext
     ) async {
+        guard isCurrentHistoryMutationContext(context) else { return }
         let pending = inputs
             .filter { $0.document.source.isFullText }
             .filter { fullTextReviewSummaries[$0.work.id] == nil }
@@ -1235,8 +1284,10 @@ final class SearchStore: ObservableObject {
         }
 
         defer {
-            for input in pending {
-                fullTextReviewSummaryInProgress.remove(input.work.id)
+            if isCurrentHistoryMutationContext(context) {
+                for input in pending {
+                    fullTextReviewSummaryInProgress.remove(input.work.id)
+                }
             }
         }
 
@@ -1254,6 +1305,7 @@ final class SearchStore: ObservableObject {
                 pending,
                 configuration: configuration
             )
+            guard isCurrentHistoryMutationContext(context) else { return }
             let outputsByIndex = Dictionary(uniqueKeysWithValues: outputs.map { ($0.index, $0) })
             for index in pending.indices {
                 let input = pending[index]
@@ -1269,11 +1321,13 @@ final class SearchStore: ObservableObject {
                 }
             }
         } catch {
+            guard isCurrentHistoryMutationContext(context) else { return }
             for input in pending {
                 fullTextReviewSummaries[input.work.id] = fallback(input)
                 fullTextReviewSummaryErrors[input.work.id] = "AI summary failed; showing a local full-text draft: \(error.localizedDescription)"
             }
         }
+        guard isCurrentHistoryMutationContext(context) else { return }
         scheduleCompletedStageSave()
     }
 
@@ -1586,6 +1640,7 @@ final class SearchStore: ObservableObject {
         retrievalQuery: String,
         configuration: AIProviderConfiguration
     ) async throws -> (initial: String, refinement: String) {
+        try Task.checkCancellation()
         let initialStartedAt = Date()
         let fallbackWorks = aiRankedWorks
         let candidates = Array(aiRankedWorks.prefix(aiEvidenceCandidateLimit))
@@ -1645,6 +1700,10 @@ final class SearchStore: ObservableObject {
             }
 
             for await (work, document) in group {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
                 if let document,
                    document.source.isFullText,
                    Self.fullTextDocument(document, matches: work) {
@@ -1657,6 +1716,8 @@ final class SearchStore: ObservableObject {
                 )
             }
         }
+
+        try Task.checkCancellation()
 
         let fullTextPairs = fullTextCandidates.compactMap { work -> (work: Work, document: FullTextDocument)? in
             guard let document = documentsByID[work.id] else { return nil }
@@ -2012,6 +2073,8 @@ final class SearchStore: ObservableObject {
         works pageWorks: [Work],
         generation: Int
     ) {
+        let context = captureHistoryMutationContext()
+        guard context.searchGeneration == generation else { return }
         let candidates = pageWorks.filter { work in
             aiFullTextDocuments[work.id] == nil
                 && !fullTextReviewSummaryInProgress.contains(work.id)
@@ -2034,8 +2097,10 @@ final class SearchStore: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             defer {
-                for work in candidates {
-                    self.aiVisiblePageFullTextInProgress.remove(work.id)
+                if self.isCurrentHistoryMutationContext(context) {
+                    for work in candidates {
+                        self.aiVisiblePageFullTextInProgress.remove(work.id)
+                    }
                 }
             }
             var fullTextPairs: [(work: Work, document: FullTextDocument)] = []
@@ -2056,7 +2121,8 @@ final class SearchStore: ObservableObject {
                 }
 
                 for await (work, document) in group {
-                    guard generation == self.searchGeneration, self.searchMode == .ai else {
+                    guard self.isCurrentHistoryMutationContext(context),
+                          self.searchMode == .ai else {
                         group.cancelAll()
                         return
                     }
@@ -2087,7 +2153,7 @@ final class SearchStore: ObservableObject {
                 }
             }
 
-            guard generation == self.searchGeneration,
+            guard self.isCurrentHistoryMutationContext(context),
                   self.searchMode == .ai,
                   !fullTextPairs.isEmpty else {
                 return
@@ -2101,7 +2167,9 @@ final class SearchStore: ObservableObject {
     }
 
     private func analyzeVisiblePageInBackground() {
+        let context = captureHistoryMutationContext()
         Task {
+            guard isCurrentHistoryMutationContext(context) else { return }
             await analyzeCurrentPage()
         }
     }
@@ -2203,9 +2271,11 @@ final class SearchStore: ObservableObject {
     }
 
     func loadFullText(for work: Work, forceRefresh: Bool = false) async {
+        let context = captureHistoryMutationContext()
         fullTextState = .loading
         if forceRefresh {
             await fullTextService.clearCache(workID: work.id)
+            guard isCurrentHistoryMutationContext(context) else { return }
         }
         do {
             let apiKey = CredentialStore.string(for: .openAlexAPIKey)
@@ -2218,6 +2288,7 @@ final class SearchStore: ObservableObject {
                 contactEmail: contactEmail,
                 semanticScholarAPIKey: semanticScholarAPIKey
             )
+            guard isCurrentHistoryMutationContext(context) else { return }
             guard Self.fullTextDocument(document, matches: work) else {
                 if document.source.isFullText {
                     await fullTextService.clearCache(workID: work.id)
@@ -2247,11 +2318,13 @@ final class SearchStore: ObservableObject {
             searchPassages()
             scheduleCompletedStageSave()
         } catch is CancellationError {
+            guard isCurrentHistoryMutationContext(context) else { return }
             if selection == work.id {
                 fullTextState = .idle
             }
             return
         } catch {
+            guard isCurrentHistoryMutationContext(context) else { return }
             fullTextState = .failed(error.localizedDescription)
         }
     }
@@ -2259,6 +2332,7 @@ final class SearchStore: ObservableObject {
     /// User-initiated full-text lookup for the Summary tab. Unlike the exhaustive manual
     /// loader, this has a firm total budget so the UI can never remain in a loading state.
     func loadFullTextForSummary(for work: Work, timeoutSeconds: Int = 15) async {
+        let context = captureHistoryMutationContext()
         fullTextState = .loading
         let apiKey = CredentialStore.string(for: .openAlexAPIKey)
         let semanticScholarAPIKey = CredentialStore.string(for: .semanticScholarAPIKey)
@@ -2274,6 +2348,7 @@ final class SearchStore: ObservableObject {
             seconds: timeoutSeconds
         )
 
+        guard isCurrentHistoryMutationContext(context) else { return }
         guard !Task.isCancelled else {
             if selection == work.id { fullTextState = .idle }
             return
@@ -2304,9 +2379,11 @@ final class SearchStore: ObservableObject {
         panel.message = "选择你有权访问的论文 PDF。文件只在本机解析。"
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
+        let context = captureHistoryMutationContext()
         fullTextState = .loading
         do {
             let document = try await fullTextService.importPDF(url: url, work: work)
+            guard isCurrentHistoryMutationContext(context) else { return }
             guard selection == work.id else { return }
             fullTextDocument = document
             aiFullTextDocuments[work.id] = document
@@ -2318,6 +2395,7 @@ final class SearchStore: ObservableObject {
             searchPassages()
             scheduleCompletedStageSave()
         } catch {
+            guard isCurrentHistoryMutationContext(context) else { return }
             fullTextState = .failed(error.localizedDescription)
         }
     }
@@ -2338,7 +2416,7 @@ final class SearchStore: ObservableObject {
         let candidates = works
         guard !candidates.isEmpty else { return }
         corpusAnalysisGeneration &+= 1
-        let generation = corpusAnalysisGeneration
+        let context = captureHistoryMutationContext()
         corpusState = .loading(completed: 0, total: candidates.count)
         corpusDocuments = [:]
         corpusHits = []
@@ -2360,7 +2438,7 @@ final class SearchStore: ObservableObject {
             }
 
             for await (work, document, error) in group {
-                guard generation == corpusAnalysisGeneration else {
+                guard isCurrentCorpusMutationContext(context) else {
                     group.cancelAll()
                     return
                 }
@@ -2375,7 +2453,7 @@ final class SearchStore: ObservableObject {
             }
         }
 
-        guard generation == corpusAnalysisGeneration else { return }
+        guard isCurrentCorpusMutationContext(context) else { return }
         searchCorpus()
         if corpusDocuments.isEmpty {
             corpusState = .failed(
