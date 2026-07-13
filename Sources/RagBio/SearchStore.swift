@@ -289,6 +289,70 @@ final class SearchStore: ObservableObject {
         corpusAnalysisGeneration &+= 1
     }
 
+    @discardableResult
+    func beginHistorySearch(displayQuery: String) async -> Int {
+        aiEnhancementTask?.cancel()
+        aiEnhancementTask = nil
+        searchGeneration &+= 1
+        let generation = searchGeneration
+        let normalized = SearchQueryIdentity.normalize(displayQuery)
+        let prior: SearchHistoryRecord?
+        if currentHistoryRecord?.normalizedQuery == normalized {
+            prior = currentHistoryRecord
+        } else {
+            prior = try? await historyStore.record(normalizedQuery: normalized)
+        }
+        guard generation == searchGeneration else { return generation }
+        if let prior {
+            restoreHistoryRecord(prior)
+            query = displayQuery
+            isRefreshingHistory = true
+        } else {
+            isRefreshingHistory = false
+            clearSearchResultsForDifferentQuery()
+        }
+        errorMessage = nil
+        historyErrorMessage = nil
+        return generation
+    }
+
+    func isCurrentSearchGeneration(_ generation: Int) -> Bool {
+        generation == searchGeneration
+    }
+
+    private func clearSearchResultsForDifferentQuery() {
+        currentHistoryID = nil
+        currentHistoryRecord = nil
+        works = []
+        aiRankedWorks = []
+        totalCount = 0
+        currentPage = 1
+        selection = nil
+        evidence = []
+        scanDecisions = [:]
+        currentEvidenceTable = nil
+        currentFieldScanReport = nil
+        lastAIPlan = nil
+        aiReasons = [:]
+        aiScores = [:]
+        aiEvidenceLevels = [:]
+        aiSearchNotice = nil
+        pubMedNotice = nil
+        fullTextReviewSummaries = [:]
+        articleSummaries = [:]
+    }
+
+    private func finishHistorySearchFailure(
+        generation: Int,
+        message: String?,
+        cancelled: Bool = false
+    ) {
+        guard generation == searchGeneration else { return }
+        isLoading = false
+        isRefreshingHistory = false
+        if !cancelled { errorMessage = message }
+    }
+
     private func clearVisibleSearch() {
         invalidateAsyncWork()
         query = ""
@@ -380,6 +444,45 @@ final class SearchStore: ObservableObject {
         }
     }
 
+    func commitFirstUsableHistoryStage(
+        displayQuery: String,
+        startedAt: Date,
+        generation: Int
+    ) async {
+        guard generation == searchGeneration, !aiRankedWorks.isEmpty else { return }
+        let normalized = SearchQueryIdentity.normalize(displayQuery)
+        do {
+            let prior = try await historyStore.record(normalizedQuery: normalized)
+            guard generation == searchGeneration else { return }
+            historyRevision = max(historyRevision, prior?.snapshot.revision ?? 0) + 1
+            let record = SearchHistoryRecord(
+                schemaVersion: SearchHistoryRecord.currentSchemaVersion,
+                id: prior?.id ?? UUID(),
+                displayQuery: displayQuery,
+                normalizedQuery: normalized,
+                createdAt: prior?.createdAt ?? startedAt,
+                lastSuccessfulSearchAt: Date(),
+                snapshot: makeHistorySnapshot(
+                    displayQuery: displayQuery,
+                    revision: historyRevision
+                ),
+                useLedger: prior?.useLedger ?? UseLedger()
+            )
+            let index = try await historyStore.save(record)
+            guard generation == searchGeneration else { return }
+            currentHistoryID = record.id
+            currentHistoryRecord = record
+            historySummaries = index.summaries
+            isRefreshingHistory = false
+            applyUseLedgerToVisibleWorks(record.useLedger)
+        } catch {
+            guard generation == searchGeneration else { return }
+            if let old = currentHistoryRecord { restoreHistoryRecord(old) }
+            historyErrorMessage = "Search completed, but history could not be saved."
+            isRefreshingHistory = false
+        }
+    }
+
     func persistCurrentStage(
         _ snapshot: SearchHistorySnapshot,
         expectedGeneration: Int
@@ -396,6 +499,7 @@ final class SearchStore: ObservableObject {
             let index = try await historyStore.loadIndex()
             historySummaries = index.summaries
         } catch {
+            guard expectedGeneration == searchGeneration else { return }
             historyErrorMessage = "Search completed, but history could not be saved."
         }
     }
@@ -752,18 +856,18 @@ final class SearchStore: ObservableObject {
     }
 
     func search() async {
-        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanQuery.isEmpty else { return }
-        let openAlexQuery = OpenAlexQueryNormalizer.normalize(cleanQuery)
-        guard !openAlexQuery.isEmpty else { return }
-        aiEnhancementTask?.cancel()
-        aiEnhancementTask = nil
-        searchGeneration &+= 1
-        let generation = searchGeneration
-        let searchStartedAt = Date()
-        searchTimingSummary = nil
-        resetScanArtifactsForNewSearch()
+        let displayQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !displayQuery.isEmpty else { return }
         if searchMode == .keyword {
+            let openAlexQuery = OpenAlexQueryNormalizer.normalize(displayQuery)
+            guard !openAlexQuery.isEmpty else { return }
+            aiEnhancementTask?.cancel()
+            aiEnhancementTask = nil
+            searchGeneration &+= 1
+            let generation = searchGeneration
+            let searchStartedAt = Date()
+            searchTimingSummary = nil
+            resetScanArtifactsForNewSearch()
             lastAIPlan = nil
             aiRerankState = .idle
             aiRankedWorks = []
@@ -788,33 +892,28 @@ final class SearchStore: ObservableObject {
             return
         }
 
+        let generation = await beginHistorySearch(displayQuery: displayQuery)
+        guard generation == searchGeneration else { return }
+        let searchStartedAt = Date()
+
         let provider = activeAIProvider
         let configuration = AIProviderConfiguration.load(provider)
         guard configuration.isConfigured else {
-            errorMessage = AIPlannerError.notConfigured(provider).localizedDescription
+            finishHistorySearchFailure(
+                generation: generation,
+                message: AIPlannerError.notConfigured(provider).localizedDescription
+            )
             return
         }
 
         isLoading = true
-        errorMessage = nil
-        works = []
-        selection = nil
-        lastAIPlan = nil
         aiRerankState = .idle
         aiSecondRerankState = .idle
-        aiSearchNotice = nil
-        pubMedNotice = nil
-        aiFullTextDocuments = [:]
-        fullTextReviewSummaries = [:]
-        fullTextReviewSummaryInProgress = []
-        fullTextReviewSummaryErrors = [:]
-        aiVisiblePageFullTextInProgress = []
-        aiVisiblePageFullTextFailures = [:]
         do {
             let planningStartedAt = Date()
             let currentFromYear = fromYearEnabled ? fromYear : nil
             let plan = try await planAISearchWithSoftTimeout(
-                description: cleanQuery,
+                description: displayQuery,
                 configuration: configuration,
                 currentSort: sort,
                 currentFromYear: currentFromYear,
@@ -823,6 +922,26 @@ final class SearchStore: ObservableObject {
             )
             try ensureSearchIsActive(generation, mode: .ai)
             let planningSeconds = elapsedSeconds(since: planningStartedAt)
+
+            aiRerankState = .fetchingCandidates
+            let apiKey = CredentialStore.string(for: .openAlexAPIKey)
+            guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw AISearchPipelineError.openAlexKeyRequired
+            }
+            let candidateStartedAt = Date()
+            let candidateResult = try await fetchAICandidates(
+                plan: plan,
+                apiKey: apiKey
+            )
+            try ensureSearchIsActive(generation, mode: .ai)
+            let candidates = candidateResult.works
+            guard !candidates.isEmpty else {
+                throw AISearchPipelineError.candidateFetch(
+                    "OpenAlex 和 PubMed 都没有返回候选论文"
+                )
+            }
+            let candidateSeconds = elapsedSeconds(since: candidateStartedAt)
+
             lastAIPlan = plan
             sort = plan.sort
             openAccessOnly = plan.openAccessOnly
@@ -835,20 +954,22 @@ final class SearchStore: ObservableObject {
             } else {
                 fromYearEnabled = false
             }
-
-            aiRerankState = .fetchingCandidates
-            let apiKey = CredentialStore.string(for: .openAlexAPIKey)
-            guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw AISearchPipelineError.openAlexKeyRequired
-            }
-            let candidateStartedAt = Date()
-            let candidates = try await fetchAICandidates(
-                plan: plan,
-                apiKey: apiKey
-            )
-            try ensureSearchIsActive(generation, mode: .ai)
-            let candidateSeconds = elapsedSeconds(since: candidateStartedAt)
-
+            currentEvidenceTable = nil
+            currentFieldScanReport = nil
+            fieldSummary = nil
+            fieldScanError = nil
+            fieldSummaryError = nil
+            aiSearchNotice = candidateResult.aiNotice
+            pubMedNotice = candidateResult.pubMedNotice
+            aiFullTextDocuments = [:]
+            fullTextReviewSummaries = [:]
+            fullTextReviewSummaryInProgress = []
+            fullTextReviewSummaryErrors = [:]
+            articleSummaries = [:]
+            articleSummaryInProgress = []
+            articleSummaryErrors = [:]
+            aiVisiblePageFullTextInProgress = []
+            aiVisiblePageFullTextFailures = [:]
             aiRankedWorks = candidates
             lastQuery = plan.searchQuery
             totalCount = candidates.count
@@ -856,35 +977,50 @@ final class SearchStore: ObservableObject {
             isLoading = false
             applyLocalFastRanking(
                 candidates,
-                originalRequest: cleanQuery,
+                originalRequest: displayQuery,
                 retrievalQuery: plan.searchQuery
             )
             totalCount = aiRankedWorks.count
-            await showAIPage(1, analyze: false)
-            analyzeVisiblePageInBackground()
+            await showAIPage(1, analyze: false, persistStage: false)
             searchTimingSummary = "首屏 \(elapsedSeconds(since: searchStartedAt)) 秒 · AI 理解 \(planningSeconds) 秒 · OpenAlex \(candidateSeconds) 秒 · 临时候选"
+            await commitFirstUsableHistoryStage(
+                displayQuery: displayQuery,
+                startedAt: searchStartedAt,
+                generation: generation
+            )
+            guard generation == searchGeneration,
+                  historyErrorMessage == nil else { return }
+            analyzeVisiblePageInBackground()
+            enrichVisibleAIPageFullTextInBackground(
+                works: works,
+                generation: generation
+            )
             aiEnhancementTask = Task { [weak self] in
                 guard let self else { return }
                 await self.continueAIEnhancedRanking(
                     generation: generation,
                     candidates: candidates,
-                    originalRequest: cleanQuery,
+                    originalRequest: displayQuery,
                     retrievalQuery: plan.searchQuery,
                     configuration: configuration,
                     searchStartedAt: searchStartedAt
                 )
             }
         } catch is CancellationError {
-            if generation == searchGeneration {
-                isLoading = false
-                aiRerankState = .idle
-            }
+            guard generation == searchGeneration else { return }
+            aiRerankState = .idle
+            finishHistorySearchFailure(
+                generation: generation,
+                message: nil,
+                cancelled: true
+            )
         } catch {
-            if generation == searchGeneration {
-                isLoading = false
-                aiRerankState = .idle
-                errorMessage = error.localizedDescription
-            }
+            guard generation == searchGeneration else { return }
+            aiRerankState = .idle
+            finishHistorySearchFailure(
+                generation: generation,
+                message: error.localizedDescription
+            )
         }
     }
 
@@ -908,12 +1044,12 @@ final class SearchStore: ObservableObject {
             let coarseSeconds = elapsedSeconds(since: coarseStartedAt)
 
             totalCount = aiRankedWorks.count
-            await showAIPage(1, analyze: false)
-            analyzeVisiblePageInBackground()
             let rankedResultsSeconds = elapsedSeconds(since: searchStartedAt)
             searchTimingSummary = usedAIRanking
                 ? "首屏 \(rankedResultsSeconds) 秒 · AI 摘要精排 \(coarseSeconds) 秒"
                 : "首屏 \(rankedResultsSeconds) 秒 · AI 粗排未返回 \(coarseSeconds) 秒 · 临时候选"
+            await showAIPage(1, analyze: false)
+            analyzeVisiblePageInBackground()
 
             guard !aiRankedWorks.isEmpty else {
                 aiSearchNotice = "AI 已分析 \(candidates.count) 篇候选论文，但没有找到相关度达到要求的结果；当前保留临时候选。"
@@ -934,11 +1070,11 @@ final class SearchStore: ObservableObject {
             )
             try ensureSearchIsActive(generation, mode: .ai)
             totalCount = aiRankedWorks.count
-            await showAIPage(1, analyze: false)
-            await analyzeCurrentPage()
             searchTimingSummary = usedAIRanking
                 ? "首屏 \(rankedResultsSeconds) 秒 · AI 精排 \(coarseSeconds) 秒 · 证据初排 \(evidenceTiming.initial) 秒 · 全文补强 \(evidenceTiming.refinement) 秒"
                 : "首屏 \(rankedResultsSeconds) 秒 · 临时候选 · 证据初排 \(evidenceTiming.initial) 秒 · 全文补强 \(evidenceTiming.refinement) 秒"
+            await showAIPage(1, analyze: false)
+            await analyzeCurrentPage()
         } catch is CancellationError {
             return
         } catch {
@@ -1028,7 +1164,7 @@ final class SearchStore: ObservableObject {
     private func fetchAICandidates(
         plan: AISearchPlan,
         apiKey: String?
-    ) async throws -> [Work] {
+    ) async throws -> (works: [Work], aiNotice: String?, pubMedNotice: String?) {
         let pageCount = Int(ceil(Double(aiCandidateLimit) / Double(aiCandidatePageSize)))
         let pages = await withTaskGroup(
             of: (page: Int, works: [Work], error: String?).self,
@@ -1076,14 +1212,14 @@ final class SearchStore: ObservableObject {
             )
         }
 
-        pubMedNotice = addedFromPubMed > 0
+        let pubMedNotice = addedFromPubMed > 0
             ? "PubMed 为本次检索补充了 \(addedFromPubMed) 篇 OpenAlex 未覆盖的论文。"
             : nil
         let failedPages = pages.filter { $0.error != nil }.count
-        if failedPages > 0 {
-            aiSearchNotice = "\(failedPages) 个 OpenAlex 候选批次失败，已用成功取得的 \(candidates.count) 篇继续分析。"
-        }
-        return candidates
+        let aiNotice = failedPages > 0
+            ? "\(failedPages) 个 OpenAlex 候选批次失败，已用成功取得的 \(candidates.count) 篇继续分析。"
+            : nil
+        return (candidates, aiNotice, pubMedNotice)
     }
 
     /// Best-effort PubMed discovery. Failures return an empty list so OpenAlex results
@@ -2039,7 +2175,11 @@ final class SearchStore: ObservableObject {
         )
     }
 
-    private func showAIPage(_ page: Int, analyze: Bool = true) async {
+    private func showAIPage(
+        _ page: Int,
+        analyze: Bool = true,
+        persistStage: Bool = true
+    ) async {
         guard page >= 1 else { return }
         let start = (page - 1) * pageSize
         guard start < aiRankedWorks.count || (page == 1 && aiRankedWorks.isEmpty) else {
@@ -2057,11 +2197,13 @@ final class SearchStore: ObservableObject {
         corpusState = .idle
         corpusDocuments = [:]
         corpusHits = []
-        scheduleCompletedStageSave()
+        if persistStage {
+            scheduleCompletedStageSave()
+        }
         if analyze {
             await analyzeCurrentPage()
         }
-        if searchMode == .ai {
+        if persistStage, searchMode == .ai {
             enrichVisibleAIPageFullTextInBackground(
                 works: works,
                 generation: searchGeneration
