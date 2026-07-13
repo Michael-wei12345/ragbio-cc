@@ -489,6 +489,133 @@ import Testing
         #expect(try await historyStore.loadRecord(id: first.id).snapshot.allWorks.map(\.shortID) == ["W1"])
         #expect(try await historyStore.loadRecord(id: second.id).snapshot.revision == 0)
     }
+
+    @Test func usedPaperAbsentFromAllRemainsInUse() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let used = makeWork(id: "https://openalex.org/W1")
+        let current = makeWork(
+            id: "https://openalex.org/W2",
+            doi: "10.1000/current"
+        )
+        var ledger = UseLedger()
+        ledger.mark(used, at: Date(timeIntervalSince1970: 1))
+        let record = makeRecord(
+            query: "gut",
+            works: [current],
+            date: Date(),
+            useLedger: ledger
+        )
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(record.id)
+
+        #expect(store.filteredWorks.map(\.shortID) == ["W2"])
+        store.decisionFilter = .use
+
+        #expect(store.filteredWorks.map(\.shortID) == ["W1"])
+        #expect(store.decision(for: used) == .use)
+        #expect(store.hasMarkedUseWorks)
+    }
+
+    @Test func stableIdentityReappearanceIsRecognizedAsUse() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let used = makeWork(id: "https://openalex.org/W1")
+        let reappeared = makeWork(id: "https://openalex.org/W2")
+        var ledger = UseLedger()
+        ledger.mark(used)
+        let record = makeRecord(
+            query: "gut",
+            works: [reappeared],
+            date: Date(),
+            useLedger: ledger
+        )
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(record.id)
+
+        #expect(store.decision(for: reappeared) == .use)
+    }
+
+    @Test func successfulUseTogglePersistsAndUpdatesVisibleHistory() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let work = makeWork()
+        let record = makeRecord(query: "gut", works: [work], date: Date())
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(record.id)
+
+        await store.setUse(true, for: work)
+
+        #expect(store.decision(for: work) == .use)
+        #expect(store.currentHistoryRecord?.useLedger.contains(work) == true)
+        #expect(store.historySummaries.first?.useCount == 1)
+        #expect(try await historyStore.loadRecord(id: record.id).useLedger.contains(work))
+    }
+
+    @Test func failedUseWriteRestoresPreviousVisibleDecision() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        let historyStore = SearchHistoryStore(
+            root: historyRoot,
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let work = makeWork()
+        let record = makeRecord(query: "gut", works: [work], date: Date())
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(record.id)
+        try setHistoryPermissions(0o500, at: historyRoot)
+        defer { try? setHistoryPermissions(0o700, at: historyRoot) }
+
+        await store.setUse(true, for: work)
+
+        #expect(store.decision(for: work) == .unreviewed)
+        #expect(store.currentHistoryRecord == record)
+        #expect(
+            store.historyErrorMessage
+                == "Use could not be saved. Your previous selection was restored."
+        )
+    }
+
+    @Test func rapidDecisionTogglesPersistTheLatestSelection() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let work = makeWork()
+        let record = makeRecord(query: "gut", works: [work], date: Date())
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(record.id)
+
+        store.setScanDecision(.use, for: work)
+        store.setScanDecision(.unreviewed, for: work)
+        store.setScanDecision(.use, for: work)
+        try await Task.sleep(for: .milliseconds(250))
+
+        #expect(store.decision(for: work) == .use)
+        #expect(store.currentHistoryRecord?.useLedger.contains(work) == true)
+        #expect(store.historySummaries.first?.useCount == 1)
+        #expect(try await historyStore.loadRecord(id: record.id).useLedger.contains(work))
+    }
 }
 
 private func setHistoryPermissions(_ permissions: Int, at url: URL) throws {

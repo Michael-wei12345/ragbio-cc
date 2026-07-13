@@ -100,6 +100,8 @@ final class SearchStore: ObservableObject {
     private var historyRevision = 0
     private var historyMutationToken = SearchHistoryMutationToken()
     private var historyRefreshFallbackRecord: SearchHistoryRecord?
+    private var useMutationRevision = 0
+    private var useMutationTask: Task<Void, Never>?
     let pageSize = 20
     private let aiCandidateLimit = 50
     private let aiCandidatePageSize = 50
@@ -425,19 +427,24 @@ final class SearchStore: ObservableObject {
     }
 
     private func applyUseLedgerToVisibleWorks(_ ledger: UseLedger) {
-        scanDecisions = Dictionary(
-            uniqueKeysWithValues: ledger.papers.map { paper in
-                (
-                    paper.work.id,
-                    ScanDecisionRecord(
-                        workID: paper.work.id,
-                        decision: .use,
-                        note: nil,
-                        updatedAt: paper.selectedAt
-                    )
-                )
-            }
-        )
+        var decisions: [String: ScanDecisionRecord] = [:]
+        for paper in ledger.papers {
+            decisions[paper.work.id] = ScanDecisionRecord(
+                workID: paper.work.id,
+                decision: .use,
+                note: nil,
+                updatedAt: paper.selectedAt
+            )
+        }
+        for work in works where ledger.contains(work) {
+            decisions[work.id] = ScanDecisionRecord(
+                workID: work.id,
+                decision: .use,
+                note: nil,
+                updatedAt: Date()
+            )
+        }
+        scanDecisions = decisions
     }
 
     private func scheduleCompletedStageSave() {
@@ -549,21 +556,10 @@ final class SearchStore: ObservableObject {
     }
 
     var filteredWorks: [Work] {
-        guard decisionFilter != .all else { return works }
-        return works.filter { work in
-            switch decisionFilter {
-            case .all:
-                return true
-            case .use:
-                return decision(for: work) == .use
-            case .maybe:
-                return decision(for: work) == .maybe
-            case .exclude:
-                return decision(for: work) == .exclude
-            case .unreviewed:
-                return decision(for: work) == .unreviewed
-            }
+        if decisionFilter == .use {
+            return currentHistoryRecord?.useLedger.papers.map(\.work) ?? []
         }
+        return works
     }
 
     var evidenceTableMarkdown: String? {
@@ -638,30 +634,73 @@ final class SearchStore: ObservableObject {
     }
 
     func setScanDecision(_ decision: ScanDecision, for work: Work) {
-        if decision == .unreviewed {
-            clearScanDecision(for: work)
-            return
+        guard let historyID = currentHistoryID else { return }
+        let previous = useMutationTask
+        useMutationTask = Task { [weak self] in
+            await previous?.value
+            await self?.setUse(
+                decision == .use,
+                for: work,
+                expectedHistoryID: historyID
+            )
         }
-        scanDecisions[work.id] = ScanDecisionRecord(
-            workID: work.id,
-            decision: decision,
-            note: scanDecisions[work.id]?.note,
-            updatedAt: Date()
-        )
-        currentEvidenceTable = nil
-        currentFieldScanReport = nil
-        scheduleCompletedStageSave()
     }
 
     func clearScanDecision(for work: Work) {
-        scanDecisions.removeValue(forKey: work.id)
+        setScanDecision(.unreviewed, for: work)
+    }
+
+    func setUse(_ isUsed: Bool, for work: Work) async {
+        guard let historyID = currentHistoryID else { return }
+        await setUse(isUsed, for: work, expectedHistoryID: historyID)
+    }
+
+    private func setUse(
+        _ isUsed: Bool,
+        for work: Work,
+        expectedHistoryID historyID: UUID
+    ) async {
+        guard currentHistoryID == historyID,
+              let previous = currentHistoryRecord else { return }
+        useMutationRevision &+= 1
+        let revision = useMutationRevision
+        let context = captureHistoryMutationContext()
+        var optimistic = previous
+        if isUsed {
+            optimistic.useLedger.mark(work)
+        } else {
+            optimistic.useLedger.remove(work)
+        }
+        currentHistoryRecord = optimistic
+        applyUseLedgerToVisibleWorks(optimistic.useLedger)
         currentEvidenceTable = nil
         currentFieldScanReport = nil
-        scheduleCompletedStageSave()
+        do {
+            let record = try await historyStore.setUse(
+                historyID: historyID,
+                work: work,
+                isUsed: isUsed
+            )
+            guard revision == useMutationRevision,
+                  isCurrentHistoryMutationContext(context) else { return }
+            let index = try await historyStore.loadIndex()
+            guard revision == useMutationRevision,
+                  isCurrentHistoryMutationContext(context) else { return }
+            currentHistoryRecord = record
+            historySummaries = index.summaries
+            applyUseLedgerToVisibleWorks(record.useLedger)
+            historyErrorMessage = nil
+        } catch {
+            guard revision == useMutationRevision,
+                  isCurrentHistoryMutationContext(context) else { return }
+            currentHistoryRecord = previous
+            applyUseLedgerToVisibleWorks(previous.useLedger)
+            historyErrorMessage = "Use could not be saved. Your previous selection was restored."
+        }
     }
 
     func decision(for work: Work) -> ScanDecision {
-        scanDecisions[work.id]?.decision ?? .unreviewed
+        currentHistoryRecord?.useLedger.contains(work) == true ? .use : .unreviewed
     }
 
     func generateEvidenceTable() {
@@ -739,7 +778,7 @@ final class SearchStore: ObservableObject {
     }
 
     var hasMarkedUseWorks: Bool {
-        scanDecisions.values.contains { $0.decision == .use }
+        currentHistoryRecord?.useLedger.papers.isEmpty == false
     }
 
     var fullTextSummaryCount: Int {
