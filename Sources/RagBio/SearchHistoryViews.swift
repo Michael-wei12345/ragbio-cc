@@ -1,4 +1,6 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum SearchHistorySuggestions {
     static func filtered(
@@ -14,6 +16,169 @@ enum SearchHistorySuggestions {
 
     static func canSubmit(query: String, isLoading: Bool) -> Bool {
         !isLoading && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+enum SearchHistoryExportSelection {
+    static func candidates(
+        _ summaries: [SearchHistorySummary]
+    ) -> [SearchHistorySummary] {
+        summaries.filter { $0.useCount > 0 }
+            .sorted { $0.lastSuccessfulSearchAt > $1.lastSuccessfulSearchAt }
+    }
+
+    static func initialIDs(
+        candidates: [SearchHistorySummary],
+        currentHistoryID: UUID?
+    ) -> Set<UUID> {
+        guard let currentHistoryID,
+              candidates.contains(where: { $0.id == currentHistoryID }) else { return [] }
+        return [currentHistoryID]
+    }
+}
+
+@MainActor
+private enum SearchHistoryNativeSave {
+    static func run(text: String) throws -> Bool {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "RagBio-Use-URLs.txt"
+        panel.message = "Export URLs from selected search histories"
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
+        try text.write(to: url, atomically: true, encoding: .utf8)
+        return true
+    }
+}
+
+struct UseURLExportSheet: View {
+    @ObservedObject var store: SearchStore
+    @Binding var isPresented: Bool
+    @State private var selectedIDs = Set<UUID>()
+    @State private var document = SearchHistoryExportDocument.empty
+    @State private var documentIDs = Set<UUID>()
+    @State private var activeLoadID = UUID()
+    @State private var writeError: String?
+
+    private var candidates: [SearchHistorySummary] {
+        SearchHistoryExportSelection.candidates(store.historySummaries)
+    }
+
+    private var currentDocument: SearchHistoryExportDocument {
+        documentIDs == selectedIDs ? document : .empty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Export Use URLs")
+                .font(.title2.bold())
+
+            HStack {
+                Button("Select All") {
+                    select(Set(candidates.map(\.id)))
+                }
+                Button("Clear") {
+                    select([])
+                }
+                Spacer()
+                Text("\(selectedIDs.count) selected")
+                    .foregroundStyle(.secondary)
+            }
+
+            List(candidates) { summary in
+                Toggle(isOn: Binding(
+                    get: { selectedIDs.contains(summary.id) },
+                    set: { isSelected in
+                        var updated = selectedIDs
+                        if isSelected {
+                            updated.insert(summary.id)
+                        } else {
+                            updated.remove(summary.id)
+                        }
+                        select(updated)
+                    }
+                )) {
+                    HStack {
+                        Text(summary.displayQuery)
+                            .lineLimit(1)
+                        Spacer()
+                        Text("\(summary.useCount) Use")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.checkbox)
+            }
+
+            if let writeError {
+                Text(writeError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    isPresented = false
+                }
+                Button("Export \(currentDocument.urlCount) URLs…") {
+                    save()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedIDs.isEmpty || documentIDs != selectedIDs)
+            }
+        }
+        .padding(20)
+        .frame(width: 520, height: 430)
+        .task {
+            guard selectedIDs.isEmpty else { return }
+            select(SearchHistoryExportSelection.initialIDs(
+                candidates: candidates,
+                currentHistoryID: store.currentHistoryID
+            ))
+        }
+        .task(id: selectedIDs) {
+            await loadDocument()
+        }
+    }
+
+    private func select(_ ids: Set<UUID>) {
+        selectedIDs = ids
+        documentIDs = []
+        writeError = nil
+    }
+
+    private func loadDocument() async {
+        let requestedIDs = selectedIDs
+        let loadID = UUID()
+        activeLoadID = loadID
+        documentIDs = []
+        guard !requestedIDs.isEmpty else {
+            document = .empty
+            return
+        }
+        do {
+            let loaded = try await store.loadExportRecords(ids: requestedIDs)
+            try Task.checkCancellation()
+            guard activeLoadID == loadID, selectedIDs == requestedIDs else { return }
+            document = loaded
+            documentIDs = requestedIDs
+        } catch is CancellationError {
+            return
+        } catch {
+            guard activeLoadID == loadID, selectedIDs == requestedIDs else { return }
+            writeError = "The selected histories could not be loaded: \(error.localizedDescription)"
+        }
+    }
+
+    private func save() {
+        writeError = nil
+        do {
+            guard try SearchHistoryNativeSave.run(text: currentDocument.text) else { return }
+            store.presentExportStatus(currentDocument)
+            isPresented = false
+        } catch {
+            writeError = "The file could not be written: \(error.localizedDescription)"
+        }
     }
 }
 

@@ -15,7 +15,8 @@ func makeWork(
     title: String = "Example Paper",
     year: Int? = 2024,
     author: String? = "A. Author",
-    publisherURL: String? = "https://publisher.example/article"
+    publisherURL: String? = "https://publisher.example/article",
+    bestPublisherURL: String? = nil
 ) -> Work {
     Work(
         id: id,
@@ -36,7 +37,16 @@ func makeWork(
             license: nil,
             version: nil
         ),
-        bestOpenAccessLocation: nil,
+        bestOpenAccessLocation: bestPublisherURL.map {
+            Location(
+                isOpenAccess: true,
+                landingPageURL: $0,
+                pdfURL: nil,
+                source: Source(displayName: "Best Source"),
+                license: nil,
+                version: nil
+            )
+        },
         openAccess: OpenAccess(isOpenAccess: true, status: "gold", openAccessURL: nil),
         contentURLs: nil,
         hasFullText: false,

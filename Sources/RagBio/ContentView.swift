@@ -410,6 +410,7 @@ private struct StatusLegendItem: View {
 
 private struct ScanDecisionFilterBar: View {
     @ObservedObject var store: SearchStore
+    @State private var isExportPresented = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -424,11 +425,13 @@ private struct ScanDecisionFilterBar: View {
             .pickerStyle(.segmented)
             .labelsHidden()
 
-            Button("导出 Use 的 URL", systemImage: "square.and.arrow.up") {
-                store.exportUseMarkedURLs()
+            Button("Export Use URLs", systemImage: "square.and.arrow.up") {
+                isExportPresented = true
             }
             .font(.caption)
-            .disabled(!store.hasMarkedUseWorks)
+        }
+        .sheet(isPresented: $isExportPresented) {
+            UseURLExportSheet(store: store, isPresented: $isExportPresented)
         }
     }
 }

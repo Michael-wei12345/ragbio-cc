@@ -182,6 +182,23 @@ final class SearchStore: ObservableObject {
         }
     }
 
+    func loadExportRecords(ids: Set<UUID>) async throws -> SearchHistoryExportDocument {
+        var records: [SearchHistoryRecord] = []
+        for id in ids {
+            try Task.checkCancellation()
+            if let record = try? await historyStore.loadRecord(id: id),
+               !record.useLedger.papers.isEmpty {
+                records.append(record)
+            }
+            try Task.checkCancellation()
+        }
+        return SearchHistoryExportBuilder.make(records: records)
+    }
+
+    func presentExportStatus(_ document: SearchHistoryExportDocument) {
+        exportMessage = "Exported \(document.urlCount) URLs. Skipped \(document.skippedPaperCount) papers without a usable URL."
+    }
+
     func makeHistorySnapshot(displayQuery: String, revision: Int) -> SearchHistorySnapshot {
         SearchHistorySnapshot(
             revision: revision,
@@ -839,19 +856,6 @@ final class SearchStore: ObservableObject {
             if let url = work.landingPageURL { lookup[work.id] = url }
         }
         return lookup
-    }
-
-    /// Exports the landing-page URLs of the papers the user marked Use, one per line, to a .txt file.
-    func exportUseMarkedURLs() {
-        let ranked = aiRankedWorks.isEmpty ? works : aiRankedWorks
-        let useWorks = ranked.filter { scanDecisions[$0.id]?.decision == .use }
-        let urls = useWorks.compactMap { $0.landingPageURL?.absoluteString }
-        guard !urls.isEmpty else { return }
-        exportText(
-            urls.joined(separator: "\n") + "\n",
-            suggestedName: "RagBio-URLs-\(safeFilename(lastQuery.isEmpty ? query : lastQuery)).txt",
-            message: "导出你标记 Use 的论文 URL（每行一个）"
-        )
     }
 
     /// Generates a field-level summary (reusing the Field Scan generator + work_id validation)
