@@ -304,6 +304,12 @@ final class SearchStore: ObservableObject {
 
     @discardableResult
     func beginHistorySearch(displayQuery: String) async -> Int {
+        let activeFilters = (
+            sort: sort,
+            fromYearEnabled: fromYearEnabled,
+            fromYear: fromYear,
+            openAccessOnly: openAccessOnly
+        )
         aiEnhancementTask?.cancel()
         aiEnhancementTask = nil
         advanceSearchGeneration()
@@ -319,6 +325,10 @@ final class SearchStore: ObservableObject {
         historyRefreshFallbackRecord = prior
         if let prior {
             restoreHistoryRecord(prior)
+            sort = activeFilters.sort
+            fromYearEnabled = activeFilters.fromYearEnabled
+            fromYear = activeFilters.fromYear
+            openAccessOnly = activeFilters.openAccessOnly
             query = displayQuery
             isRefreshingHistory = true
         } else {

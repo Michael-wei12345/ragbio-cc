@@ -113,6 +113,64 @@ import Testing
         #expect(store.isCurrentSearchGeneration(generation))
     }
 
+    @Test func sameQueryRefreshPreservesEditedFiltersAndCommitsThem() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let old = makeRecord(
+            query: "gut",
+            works: [makeWork(id: "https://openalex.org/W1")],
+            date: Date(timeIntervalSince1970: 1)
+        )
+        _ = try await historyStore.save(old)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(old.id)
+        store.sort = .newest
+        store.fromYearEnabled = true
+        store.fromYear = 2017
+        store.openAccessOnly = true
+
+        let generation = await store.beginHistorySearch(displayQuery: "gut")
+
+        #expect(store.works.first?.shortID == "W1")
+        #expect(store.isRefreshingHistory)
+        #expect(store.sort == .newest)
+        #expect(store.fromYearEnabled)
+        #expect(store.fromYear == 2017)
+        #expect(store.openAccessOnly)
+
+        let refreshed = makeWork(
+            id: "https://openalex.org/W2",
+            doi: "10.1000/refreshed"
+        )
+        var staged = old
+        staged.snapshot.allWorks = [refreshed]
+        staged.snapshot.rankedWorks = [refreshed]
+        staged.snapshot.totalCount = 1
+        staged.snapshot.selectedWorkID = refreshed.id
+        staged.snapshot.sort = store.sort
+        staged.snapshot.fromYearEnabled = store.fromYearEnabled
+        staged.snapshot.fromYear = store.fromYear
+        staged.snapshot.openAccessOnly = store.openAccessOnly
+        store.restoreHistoryRecord(staged)
+
+        await store.commitFirstUsableHistoryStage(
+            displayQuery: "gut",
+            startedAt: Date(timeIntervalSince1970: 10),
+            generation: generation
+        )
+
+        let saved = try await historyStore.loadRecord(id: old.id)
+        #expect(saved.snapshot.allWorks.map(\.shortID) == ["W2"])
+        #expect(saved.snapshot.sort == .newest)
+        #expect(saved.snapshot.fromYearEnabled)
+        #expect(saved.snapshot.fromYear == 2017)
+        #expect(saved.snapshot.openAccessOnly)
+    }
+
     @Test func staleGenerationCannotPersistStage() async throws {
         let root = try makeTemporaryDirectory()
         let historyStore = SearchHistoryStore(
