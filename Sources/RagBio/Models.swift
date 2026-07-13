@@ -111,10 +111,15 @@ struct Work: Codable, Identifiable, Hashable {
 
     var normalizedDOI: String? {
         guard let doi else { return nil }
-        return doi
-            .replacingOccurrences(of: "https://doi.org/", with: "")
-            .replacingOccurrences(of: "http://doi.org/", with: "")
+        let normalized = doi
+            .lowercased()
+            .replacingOccurrences(
+                of: #"^(https?://(dx\.)?doi\.org/|doi:\s*)"#,
+                with: "",
+                options: .regularExpression
+            )
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
     }
 
     var normalizedPMID: String? {

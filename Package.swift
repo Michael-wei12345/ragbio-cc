@@ -14,6 +14,11 @@ let package = Package(
         .executableTarget(
             name: "RagBio",
             path: "Sources/RagBio"
+        ),
+        .testTarget(
+            name: "RagBioTests",
+            dependencies: ["RagBio"],
+            path: "Tests/RagBioTests"
         )
     ],
     swiftLanguageModes: [.v5]
