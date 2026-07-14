@@ -146,21 +146,45 @@ final class SearchStore: ObservableObject {
         historyRefreshFallbackRecord = nil
         isLoading = false
         isRefreshingHistory = false
-        var openGeneration = searchGeneration
+        let openGeneration = searchGeneration
+        let mutationToken = historyMutationToken
+        let record: SearchHistoryRecord
         do {
-            let record = try await historyStore.loadRecord(id: id)
-            guard openGeneration == searchGeneration else { return }
-            restoreHistoryRecord(record)
-            openGeneration = searchGeneration
+            record = try await historyStore.loadRecord(id: id)
+        } catch {
+            guard openGeneration == searchGeneration,
+                  mutationToken.isValid else { return }
+            clearVisibleSearch(invalidateAsync: false)
+            historyErrorMessage = error.localizedDescription
+            if let index = try? await historyStore.loadIndex() {
+                guard openGeneration == searchGeneration,
+                      mutationToken.isValid,
+                      currentHistoryID == nil else { return }
+                historySummaries = index.summaries
+            }
+            return
+        }
+        guard openGeneration == searchGeneration,
+              mutationToken.isValid else { return }
+        restoreHistoryRecord(record)
+        do {
             let index = try await historyStore.setLastOpened(id)
             guard openGeneration == searchGeneration,
+                  mutationToken.isValid,
                   currentHistoryID == id else { return }
             historySummaries = index.summaries
             historyErrorMessage = nil
         } catch {
-            guard openGeneration == searchGeneration else { return }
-            clearVisibleSearch(invalidateAsync: false)
+            guard openGeneration == searchGeneration,
+                  mutationToken.isValid,
+                  currentHistoryID == id else { return }
             historyErrorMessage = error.localizedDescription
+            if let index = try? await historyStore.loadIndex() {
+                guard openGeneration == searchGeneration,
+                      mutationToken.isValid,
+                      currentHistoryID == id else { return }
+                historySummaries = index.summaries
+            }
         }
     }
 

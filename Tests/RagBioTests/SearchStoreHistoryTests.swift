@@ -154,12 +154,55 @@ import Testing
         #expect(store.currentHistoryRecord == nil)
         #expect(store.query.isEmpty)
         #expect(store.works.isEmpty)
+        #expect(!store.historySummaries.contains { $0.id == damaged.id })
+        #expect(store.historySummaries.map(\.id) == [valid.id])
 
         await store.openHistory(valid.id)
 
         #expect(store.historyErrorMessage == nil)
         #expect(store.currentHistoryID == valid.id)
         #expect(store.works.map(\.shortID) == ["W1"])
+    }
+
+    @Test func indexMetadataFailureKeepsSuccessfullyRestoredHistoryVisible() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        let historyStore = SearchHistoryStore(
+            root: historyRoot,
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let used = makeWork()
+        var ledger = UseLedger()
+        ledger.mark(used)
+        var record = makeRecord(
+            query: "metadata failure",
+            works: [used],
+            date: Date(),
+            useLedger: ledger
+        )
+        record.snapshot.sort = .newest
+        record.snapshot.fromYearEnabled = true
+        record.snapshot.fromYear = 2018
+        record.snapshot.openAccessOnly = true
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        try setHistoryPermissions(0o500, at: historyRoot)
+        defer { try? setHistoryPermissions(0o700, at: historyRoot) }
+
+        await store.openHistory(record.id)
+
+        #expect(store.historyErrorMessage != nil)
+        #expect(store.currentHistoryID == record.id)
+        #expect(store.currentHistoryRecord == record)
+        #expect(store.query == "metadata failure")
+        #expect(store.works.map(\.shortID) == ["W1"])
+        #expect(store.sort == .newest)
+        #expect(store.fromYearEnabled)
+        #expect(store.fromYear == 2018)
+        #expect(store.openAccessOnly)
+        #expect(store.decision(for: used) == .use)
+        #expect(store.historySummaries.map(\.id) == [record.id])
     }
 
     @Test func deletingCurrentHistoryInvalidatesAsyncMutationContext() async throws {
@@ -319,8 +362,19 @@ import Testing
         record.snapshot.searchTimingSummary = "completed stage"
         _ = try await writer.save(record)
 
+        RecordingURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RecordingURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
         let reader = SearchHistoryStore(root: historyRoot, legacyRoot: legacyRoot)
-        let relaunched = SearchStore(historyStore: reader, restoreOnInit: false)
+        let relaunched = SearchStore(
+            client: OpenAlexClient(session: session),
+            fullTextService: FullTextService(session: session),
+            aiQueryPlanner: AIQueryPlanner(session: session),
+            historyStore: reader,
+            restoreOnInit: false
+        )
         await relaunched.loadInitialHistory()
 
         #expect(relaunched.currentHistoryID == record.id)
@@ -337,6 +391,7 @@ import Testing
         #expect(!relaunched.isRefreshingHistory)
         #expect(relaunched.aiRerankState == .completed(candidates: 1, retained: 1))
         #expect(relaunched.aiSecondRerankState == .idle)
+        #expect(RecordingURLProtocol.requestCount == 0)
     }
 
     @Test func staleGenerationCannotPersistStage() async throws {
@@ -1017,4 +1072,36 @@ private func setHistoryPermissions(_ permissions: Int, at url: URL) throws {
         [.posixPermissions: NSNumber(value: permissions)],
         ofItemAtPath: url.path
     )
+}
+
+private final class RecordingURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var storedRequestCount = 0
+
+    static var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRequestCount
+    }
+
+    static func reset() {
+        lock.lock()
+        storedRequestCount = 0
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.storedRequestCount += 1
+        Self.lock.unlock()
+        client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+    }
+
+    override func stopLoading() {}
 }
