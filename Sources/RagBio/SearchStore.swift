@@ -92,9 +92,6 @@ final class SearchStore: ObservableObject {
     let pageSize = 20
     private let aiCandidateLimit = 50
     private let aiCandidatePageSize = 50
-    private let aiCoarseRankingBatchSize = 25
-    private let aiCoarseRankingLimit = 25
-    private let aiEvidenceCandidateLimit = 20
     private typealias EvidenceRankResult = (
         work: Work,
         score: Int,
@@ -277,9 +274,18 @@ final class SearchStore: ObservableObject {
         aiReasons = snapshot.aiReasons
         aiScores = snapshot.aiScores
         aiEvidenceLevels = snapshot.aiEvidenceLevels
-        aiSearchNotice = snapshot.aiSearchNotice
+        aiSearchNotice = snapshot.aiSearchNotice?.contains("粗排") == true
+            ? nil
+            : snapshot.aiSearchNotice
         pubMedNotice = snapshot.pubMedNotice
-        searchTimingSummary = snapshot.searchTimingSummary
+        if let timing = snapshot.searchTimingSummary,
+           timing.contains("临时候选")
+            || timing.contains("证据初排")
+            || timing.contains("全文补强") {
+            searchTimingSummary = nil
+        } else {
+            searchTimingSummary = snapshot.searchTimingSummary
+        }
         fullTextReviewSummaries = snapshot.fullTextReviewSummaries
         articleSummaries = snapshot.articleSummaries
         currentEvidenceTable = snapshot.currentEvidenceTable
@@ -321,12 +327,10 @@ final class SearchStore: ObservableObject {
                 candidates: candidates,
                 retained: snapshot.rankedWorks.count
             )
-            let levels = snapshot.aiEvidenceLevels.values
-            aiSecondRerankState = .completed(
-                fullText: levels.filter { $0.contains("全文") }.count,
-                abstractOnly: levels.filter { $0.contains("摘要") }.count,
-                retained: snapshot.rankedWorks.count
-            )
+            aiSecondRerankState = .idle
+        }
+        if pageHasCompletedFineRanking(currentPage) {
+            restoreFineRankingState(for: currentPage)
         }
     }
 
@@ -1129,15 +1133,10 @@ final class SearchStore: ObservableObject {
             guard generation == searchGeneration,
                   historyErrorMessage == nil else { return }
             analyzeVisiblePageInBackground()
-            enrichVisibleAIPageFullTextInBackground(
-                works: works,
-                generation: generation
-            )
             aiEnhancementTask = Task { [weak self] in
                 guard let self else { return }
                 await self.continueAIEnhancedRanking(
                     generation: generation,
-                    candidates: candidates,
                     originalRequest: displayQuery,
                     retrievalQuery: plan.searchQuery,
                     configuration: configuration,
@@ -1164,7 +1163,6 @@ final class SearchStore: ObservableObject {
 
     private func continueAIEnhancedRanking(
         generation: Int,
-        candidates: [Work],
         originalRequest: String,
         retrievalQuery: String,
         configuration: AIProviderConfiguration,
@@ -1172,47 +1170,20 @@ final class SearchStore: ObservableObject {
     ) async {
         do {
             try ensureSearchIsActive(generation)
-            let coarseStartedAt = Date()
-            let usedAIRanking = try await rerankCandidates(
-                candidates,
-                originalRequest: originalRequest,
-                configuration: configuration
-            )
-            try ensureSearchIsActive(generation)
-            let coarseSeconds = elapsedSeconds(since: coarseStartedAt)
-
-            totalCount = aiRankedWorks.count
             let rankedResultsSeconds = elapsedSeconds(since: searchStartedAt)
-            searchTimingSummary = usedAIRanking
-                ? "首屏 \(rankedResultsSeconds) 秒 · AI 摘要精排 \(coarseSeconds) 秒"
-                : "首屏 \(rankedResultsSeconds) 秒 · AI 粗排未返回 \(coarseSeconds) 秒 · 临时候选"
-            await showAIPage(1, analyze: false)
-            analyzeVisiblePageInBackground()
-
-            guard !aiRankedWorks.isEmpty else {
-                aiSearchNotice = "AI 已分析 \(candidates.count) 篇候选论文，但没有找到相关度达到要求的结果；当前保留临时候选。"
-                applyLocalFastRanking(
-                    candidates,
-                    originalRequest: originalRequest,
-                    retrievalQuery: retrievalQuery
-                )
-                await showAIPage(1, analyze: false)
-                analyzeVisiblePageInBackground()
-                return
-            }
-
-            let evidenceTiming = try await rerankWithFullTextEvidence(
+            let evidenceTiming = try await rerankPageWithFullTextEvidence(
+                page: 1,
                 originalRequest: originalRequest,
                 retrievalQuery: retrievalQuery,
-                configuration: configuration
+                configuration: configuration,
+                generation: generation
             )
             try ensureSearchIsActive(generation)
             totalCount = aiRankedWorks.count
-            searchTimingSummary = usedAIRanking
-                ? "首屏 \(rankedResultsSeconds) 秒 · AI 精排 \(coarseSeconds) 秒 · 证据初排 \(evidenceTiming.initial) 秒 · 全文补强 \(evidenceTiming.refinement) 秒"
-                : "首屏 \(rankedResultsSeconds) 秒 · 临时候选 · 证据初排 \(evidenceTiming.initial) 秒 · 全文补强 \(evidenceTiming.refinement) 秒"
-            await showAIPage(1, analyze: false)
-            await analyzeCurrentPage()
+            searchTimingSummary = evidenceTiming.usedAI
+                ? "首屏 \(rankedResultsSeconds) 秒 · 全文获取 \(evidenceTiming.fullText) 秒 · AI 全文精排 \(evidenceTiming.ai) 秒"
+                : "首屏 \(rankedResultsSeconds) 秒 · 全文获取 \(evidenceTiming.fullText) 秒 · AI 全文精排失败 · 本地证据排序"
+            scheduleCompletedStageSave()
         } catch is CancellationError {
             return
         } catch {
@@ -1663,191 +1634,109 @@ final class SearchStore: ObservableObject {
             return
         }
         guard !aiRankedWorks.isEmpty else { return }
+        aiEnhancementTask?.cancel()
         await showAIPage(page)
-    }
-
-    private func rerankCandidates(
-        _ candidates: [Work],
-        originalRequest: String,
-        configuration: AIProviderConfiguration
-    ) async throws -> Bool {
-        let modelCandidates = Array(candidates.prefix(aiCoarseRankingLimit))
-        let deferredCandidates = Array(candidates.dropFirst(modelCandidates.count))
-        guard !modelCandidates.isEmpty else { return false }
-
-        var ranked: [(work: Work, score: Int, relevant: Bool, reason: String, order: Int)] = []
-        var completed = 0
-        aiRerankState = .ranking(completed: 0, total: modelCandidates.count)
-
-        let batches = stride(
-            from: 0,
-            to: modelCandidates.count,
-            by: aiCoarseRankingBatchSize
-        ).map { start in
-            let end = min(start + aiCoarseRankingBatchSize, modelCandidates.count)
-            return (start: start, values: Array(modelCandidates[start..<end]))
-        }
-        let planner = aiQueryPlanner
-        var failedBatches = 0
-        await withTaskGroup(
-            of: (start: Int, works: [Work], results: [AIRankedCandidate]?).self
-        ) { group in
-            for batch in batches {
-                group.addTask {
-                    do {
-                        let results = try await SearchStore.rankBatchWithSoftTimeout(
-                            planner: planner,
-                            description: originalRequest,
-                            candidates: batch.values,
-                            configuration: configuration,
-                            seconds: 18
-                        )
-                        return (batch.start, batch.values, results)
-                    } catch {
-                        do {
-                            try await Task.sleep(for: .seconds(2))
-                            let results = try await SearchStore.rankBatchWithSoftTimeout(
-                                planner: planner,
-                                description: originalRequest,
-                                candidates: batch.values,
-                                configuration: configuration,
-                                seconds: 18
-                            )
-                            return (batch.start, batch.values, results)
-                        } catch {
-                            return (batch.start, batch.values, nil)
-                        }
-                    }
-                }
-            }
-
-            for await batch in group {
-                if let results = batch.results {
-                    let byIndex = Dictionary(
-                        uniqueKeysWithValues: results.map { ($0.index, $0) }
-                    )
-                    for (localIndex, work) in batch.works.enumerated() {
-                        guard let result = byIndex[localIndex] else { continue }
-                        let score = min(100, max(0, result.score))
-                        let reason = normalizedContentSummaryReason(
-                            result.reason,
-                            fallback: localPreviewReason(for: work)
-                        )
-                        ranked.append(
-                            (
-                                work: work,
-                                score: score,
-                                relevant: result.relevant,
-                                reason: reason,
-                                order: batch.start + localIndex
-                            )
-                        )
-                    }
-                } else {
-                    failedBatches += 1
-                }
-                completed += batch.works.count
-                aiRerankState = .ranking(completed: completed, total: modelCandidates.count)
-            }
-        }
-
-        guard !ranked.isEmpty else {
-            aiSearchNotice = "AI 粗排暂未返回，当前只显示临时候选；不会把它当作最终 AI 结果。"
-            aiRerankState = .failed(
-                message: "AI 粗排暂未返回",
-                candidates: candidates.count
-            )
-            return false
-        }
-        if failedBatches > 0 {
-            aiSearchNotice = "有 \(failedBatches) 个 AI 粗排批次失败，已保留其他成功批次的结果。"
-        }
-
-        let retained = ranked
-            .filter { $0.relevant && $0.score >= 55 }
-            .sorted {
-                if $0.score == $1.score { return $0.order < $1.order }
-                return $0.score > $1.score
-            }
-        let retainedIDs = Set(retained.map(\.work.id))
-        let remaining = candidates.filter { !retainedIDs.contains($0.id) }
-        aiRankedWorks = retained.map(\.work) + remaining
-
-        var reasons = aiReasons
-        var scores = aiScores
-        var levels = aiEvidenceLevels
-        for result in retained {
-            reasons[result.work.id] = normalizedContentSummaryReason(
-                result.reason,
-                fallback: localPreviewReason(for: result.work)
-            )
-            scores[result.work.id] = result.score
-            levels[result.work.id] = "AI 摘要精排"
-        }
-        for work in remaining {
-            if levels[work.id] == nil {
-                levels[work.id] = "临时候选"
-            }
-            if reasons[work.id] == nil {
-                reasons[work.id] = localPreviewReason(for: work)
-            }
-        }
-        aiReasons = reasons
-        aiScores = scores
-        aiEvidenceLevels = levels
-        if failedBatches == 0, !deferredCandidates.isEmpty {
-            aiSearchNotice = "AI 已优先精排前 \(modelCandidates.count) 篇；其余候选仍保留在后面，避免漏掉潜在相关论文。"
-        } else if retained.count < candidates.count {
-            aiSearchNotice = "AI 已精排 \(retained.count) 篇；其余候选仍保留在后面，避免漏掉潜在相关论文。"
-        }
-        aiRerankState = .completed(
-            candidates: candidates.count,
-            retained: aiRankedWorks.count
-        )
-        return true
-    }
-
-    private nonisolated static func rankBatchWithSoftTimeout(
-        planner: AIQueryPlanner,
-        description: String,
-        candidates: [Work],
-        configuration: AIProviderConfiguration,
-        seconds: Int
-    ) async throws -> [AIRankedCandidate] {
-        try await withThrowingTaskGroup(of: [AIRankedCandidate].self) { group in
-            group.addTask {
-                try await planner.rankBatch(
-                    description: description,
-                    candidates: candidates,
-                    configuration: configuration
+        restoreFineRankingState(for: page)
+        guard !pageHasCompletedFineRanking(page) else { return }
+        let generation = searchGeneration
+        let originalRequest = currentHistoryRecord?.displayQuery ?? query
+        let retrievalQuery = lastQuery
+        let configuration = AIProviderConfiguration.load(activeAIProvider)
+        aiEnhancementTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.rerankPageWithFullTextEvidence(
+                    page: page,
+                    originalRequest: originalRequest,
+                    retrievalQuery: retrievalQuery,
+                    configuration: configuration,
+                    generation: generation
                 )
+            } catch {
+                return
             }
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                throw AISearchPipelineError.coarseRanking("AI 粗排请求超时")
-            }
-            guard let first = try await group.next() else {
-                throw AISearchPipelineError.coarseRanking("AI 粗排无响应")
-            }
-            group.cancelAll()
-            return first
         }
     }
 
-    private func rerankWithFullTextEvidence(
+    nonisolated static func replacingPage(
+        in works: [Work],
+        page: Int,
+        pageSize: Int,
+        with replacement: [Work]
+    ) -> [Work] {
+        let start = (page - 1) * pageSize
+        guard page > 0,
+              pageSize > 0,
+              start >= 0,
+              start < works.count else { return works }
+        let end = min(start + pageSize, works.count)
+        guard replacement.count == end - start else { return works }
+        var result = works
+        result.replaceSubrange(start..<end, with: replacement)
+        return result
+    }
+
+    private func pageHasCompletedFineRanking(_ page: Int) -> Bool {
+        let start = (page - 1) * pageSize
+        guard page > 0, start < aiRankedWorks.count else { return false }
+        let end = min(start + pageSize, aiRankedWorks.count)
+        return aiRankedWorks[start..<end].allSatisfy { work in
+            guard let level = aiEvidenceLevels[work.id] else { return false }
+            return level.hasPrefix("AI 全文精排")
+                || level.hasPrefix("AI 摘要精排")
+                || level.hasPrefix("本地全文排序")
+                || level.hasPrefix("本地摘要排序")
+        }
+    }
+
+    private func restoreFineRankingState(for page: Int) {
+        let start = (page - 1) * pageSize
+        guard page > 0, start < aiRankedWorks.count else {
+            aiSecondRerankState = .idle
+            return
+        }
+        let end = min(start + pageSize, aiRankedWorks.count)
+        let levels = aiRankedWorks[start..<end].compactMap { aiEvidenceLevels[$0.id] }
+        guard levels.count == end - start else {
+            aiSecondRerankState = .idle
+            return
+        }
+        let fullText = levels.filter { $0.contains("全文") }.count
+        if levels.allSatisfy({ $0.hasPrefix("AI ") }) {
+            aiSecondRerankState = .completed(
+                fullText: fullText,
+                abstractOnly: levels.count - fullText,
+                retained: aiRankedWorks.count
+            )
+        } else if levels.allSatisfy({ $0.hasPrefix("本地") }) {
+            aiSecondRerankState = .failed(
+                "第 \(page) 页 AI 全文精排此前失败。当前使用本地全文证据排序。"
+            )
+        } else {
+            aiSecondRerankState = .idle
+        }
+    }
+
+    private func rerankPageWithFullTextEvidence(
+        page: Int,
         originalRequest: String,
         retrievalQuery: String,
-        configuration: AIProviderConfiguration
-    ) async throws -> (initial: String, refinement: String) {
-        try Task.checkCancellation()
-        let initialStartedAt = Date()
-        let fallbackWorks = aiRankedWorks
-        let candidates = Array(aiRankedWorks.prefix(aiEvidenceCandidateLimit))
+        configuration: AIProviderConfiguration,
+        generation: Int
+    ) async throws -> (fullText: String, ai: String, usedAI: Bool) {
+        try ensureSearchIsActive(generation)
+        let start = (page - 1) * pageSize
+        guard page > 0, start < aiRankedWorks.count else {
+            return ("0.0", "0.0", false)
+        }
+        let end = min(start + pageSize, aiRankedWorks.count)
+        let candidates = Array(aiRankedWorks[start..<end])
         guard !candidates.isEmpty else {
             aiSecondRerankState = .completed(fullText: 0, abstractOnly: 0, retained: 0)
-            return ("0.0", "0.0")
+            return ("0.0", "0.0", false)
         }
 
+        let fullTextStartedAt = Date()
         let apiKey = CredentialStore.string(for: .openAlexAPIKey)
         let semanticScholarAPIKey = CredentialStore.string(for: .semanticScholarAPIKey)
         let contactEmail = UserDefaults.standard.string(forKey: SettingsKeys.contactEmail)?
@@ -1858,33 +1747,23 @@ final class SearchStore: ObservableObject {
             originalRequest: originalRequest,
             retrievalQuery: retrievalQuery
         )
-        let initialInputs = makeEvidenceInputs(
-            candidates: candidates,
-            documentsByID: documentsByID,
-            retrievalQuery: evidenceQuery
-        )
-        aiSecondRerankState = .rankingEvidence(
-            completed: initialInputs.count,
-            total: initialInputs.count
-        )
-        let initialRanked = fallbackEvidenceRanking(initialInputs)
-        applyEvidenceRanking(initialRanked, preserving: fallbackWorks)
-        totalCount = aiRankedWorks.count
-        await showAIPage(1, analyze: false)
-        analyzeVisiblePageInBackground()
-        let initialSeconds = elapsedSeconds(since: initialStartedAt)
-
-        let fullTextCandidates = candidates
-        guard !fullTextCandidates.isEmpty else { return (initialSeconds, "0.0") }
-        let refinementStartedAt = Date()
+        for work in candidates {
+            aiVisiblePageFullTextInProgress.insert(work.id)
+            aiVisiblePageFullTextFailures.removeValue(forKey: work.id)
+        }
+        defer {
+            for work in candidates {
+                aiVisiblePageFullTextInProgress.remove(work.id)
+            }
+        }
         var completed = 0
         aiSecondRerankState = .refiningFullText(
             completed: 0,
-            total: fullTextCandidates.count
+            total: candidates.count
         )
 
         await withTaskGroup(of: (Work, FullTextDocument?).self) { group in
-            for work in fullTextCandidates {
+            for work in candidates {
                 group.addTask {
                     let document = await Self.loadFullTextWithSoftTimeout(
                         service: fullTextService,
@@ -1907,18 +1786,23 @@ final class SearchStore: ObservableObject {
                    document.source.isFullText,
                    Self.fullTextDocument(document, matches: work) {
                     documentsByID[work.id] = document
+                    aiVisiblePageFullTextFailures.removeValue(forKey: work.id)
+                } else {
+                    aiVisiblePageFullTextFailures[work.id] =
+                        "No accessible full text was found automatically for this paper; AI ranking used its abstract."
                 }
                 completed += 1
                 aiSecondRerankState = .refiningFullText(
                     completed: completed,
-                    total: fullTextCandidates.count
+                    total: candidates.count
                 )
             }
         }
 
-        try Task.checkCancellation()
+        try ensureSearchIsActive(generation)
+        let fullTextSeconds = elapsedSeconds(since: fullTextStartedAt)
 
-        let fullTextPairs = fullTextCandidates.compactMap { work -> (work: Work, document: FullTextDocument)? in
+        let fullTextPairs = candidates.compactMap { work -> (work: Work, document: FullTextDocument)? in
             guard let document = documentsByID[work.id] else { return nil }
             guard document.source.isFullText else { return nil }
             return (work, document)
@@ -1926,27 +1810,75 @@ final class SearchStore: ObservableObject {
         for pair in fullTextPairs {
             aiFullTextDocuments[pair.work.id] = pair.document
         }
-        startFullTextReviewSummaryGeneration(
-            for: fullTextPairs,
-            configuration: configuration
-        )
-
-        let enhancedInputs = makeEvidenceInputs(
+        let inputs = makeEvidenceInputs(
             candidates: candidates,
             documentsByID: documentsByID,
             retrievalQuery: evidenceQuery
         )
         aiSecondRerankState = .rankingEvidence(
-            completed: enhancedInputs.count,
-            total: enhancedInputs.count
+            completed: 0,
+            total: inputs.count
         )
-        let enhancedRanked = fallbackEvidenceRanking(enhancedInputs)
-        let enhancedByID = Dictionary(
-            uniqueKeysWithValues: enhancedRanked.map { ($0.work.id, $0) }
-        )
-        let mergedRanked = initialRanked.map { enhancedByID[$0.work.id] ?? $0 }
-        applyEvidenceRanking(mergedRanked, preserving: fallbackWorks)
-        return (initialSeconds, elapsedSeconds(since: refinementStartedAt))
+        let aiStartedAt = Date()
+        do {
+            let modelResults = try await aiQueryPlanner.rankEvidenceBatch(
+                description: originalRequest,
+                inputs: inputs,
+                configuration: configuration
+            )
+            try ensureSearchIsActive(generation)
+            let byIndex = Dictionary(uniqueKeysWithValues: modelResults.map { ($0.index, $0) })
+            guard byIndex.count == inputs.count else { throw AIPlannerError.invalidRanking }
+            let ranked: [EvidenceRankResult] = try inputs.enumerated().map { index, input in
+                guard let result = byIndex[index] else { throw AIPlannerError.invalidRanking }
+                let reason = result.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                return (
+                    work: input.work,
+                    score: min(100, max(0, result.score)),
+                    relevant: result.relevant,
+                    reason: reason.isEmpty ? evidenceReason(for: input) : reason,
+                    hasFullText: input.hasFullTextEvidence,
+                    order: index
+                )
+            }
+            let counts = applyPageEvidenceRanking(ranked, page: page, usedAI: true)
+            aiRerankState = .completed(candidates: aiRankedWorks.count, retained: aiRankedWorks.count)
+            aiSecondRerankState = .completed(
+                fullText: counts.fullText,
+                abstractOnly: counts.abstractOnly,
+                retained: aiRankedWorks.count
+            )
+            if currentPage == page {
+                await showAIPage(page, analyze: false)
+                analyzeVisiblePageInBackground()
+            }
+            startFullTextReviewSummaryGeneration(
+                for: fullTextPairs,
+                configuration: configuration
+            )
+            scheduleCompletedStageSave()
+            return (fullTextSeconds, elapsedSeconds(since: aiStartedAt), true)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try ensureSearchIsActive(generation)
+            let fallback = fallbackEvidenceRanking(inputs)
+            _ = applyPageEvidenceRanking(fallback, page: page, usedAI: false)
+            aiRerankState = .completed(candidates: aiRankedWorks.count, retained: aiRankedWorks.count)
+            aiSecondRerankState = .failed(
+                "第 \(page) 页 AI 全文精排失败：\(error.localizedDescription)。当前使用本地全文证据排序。"
+            )
+            if currentPage == page {
+                await showAIPage(page, analyze: false)
+                analyzeVisiblePageInBackground()
+            }
+            startFullTextReviewSummaryGeneration(
+                for: fullTextPairs,
+                configuration: configuration
+            )
+            scheduleCompletedStageSave()
+            return (fullTextSeconds, elapsedSeconds(since: aiStartedAt), false)
+        }
     }
 
     private nonisolated static func loadFullTextWithSoftTimeout(
@@ -2196,24 +2128,27 @@ final class SearchStore: ObservableObject {
         return "本文研究"
     }
 
-    private func applyEvidenceRanking(
+    private func applyPageEvidenceRanking(
         _ ranked: [EvidenceRankResult],
-        preserving fallbackWorks: [Work]
-    ) {
-        let retained = ranked
-            .filter { $0.relevant && $0.score >= 55 }
-            .sorted {
-                if $0.score == $1.score { return $0.order < $1.order }
-                return $0.score > $1.score
-            }
-        let retainedIDs = Set(retained.map(\.work.id))
-        let remaining = fallbackWorks.filter { !retainedIDs.contains($0.id) }
-        aiRankedWorks = retained.map(\.work) + remaining
+        page: Int,
+        usedAI: Bool
+    ) -> (fullText: Int, abstractOnly: Int) {
+        let ordered = ranked.sorted {
+            if $0.relevant != $1.relevant { return $0.relevant && !$1.relevant }
+            if $0.score == $1.score { return $0.order < $1.order }
+            return $0.score > $1.score
+        }
+        aiRankedWorks = Self.replacingPage(
+            in: aiRankedWorks,
+            page: page,
+            pageSize: pageSize,
+            with: ordered.map(\.work)
+        )
 
         var reasons = aiReasons
         var scores = aiScores
         var levels = aiEvidenceLevels
-        for result in retained {
+        for result in ordered {
             let cleanReason = result.reason.trimmingCharacters(in: .whitespacesAndNewlines)
             if !cleanReason.isEmpty {
                 reasons[result.work.id] = cleanReason
@@ -2221,21 +2156,18 @@ final class SearchStore: ObservableObject {
                 reasons[result.work.id] = localPreviewReason(for: result.work)
             }
             scores[result.work.id] = result.score
-            levels[result.work.id] = result.hasFullText ? "全文段落精排" : "仅摘要精排"
-        }
-        for work in remaining where levels[work.id] == nil {
-            levels[work.id] = "AI 摘要粗排"
+            if usedAI {
+                levels[result.work.id] = result.hasFullText ? "AI 全文精排" : "AI 摘要精排"
+            } else {
+                levels[result.work.id] = result.hasFullText ? "本地全文排序" : "本地摘要排序"
+            }
         }
         aiReasons = reasons
         aiScores = scores
         aiEvidenceLevels = levels
 
-        let fullTextCount = retained.filter(\.hasFullText).count
-        aiSecondRerankState = .completed(
-            fullText: fullTextCount,
-            abstractOnly: retained.count - fullTextCount,
-            retained: aiRankedWorks.count
-        )
+        let fullTextCount = ordered.filter(\.hasFullText).count
+        return (fullTextCount, ordered.count - fullTextCount)
     }
 
     private func showAIPage(
@@ -2266,107 +2198,6 @@ final class SearchStore: ObservableObject {
         if analyze {
             await analyzeCurrentPage()
         }
-        if persistStage {
-            enrichVisibleAIPageFullTextInBackground(
-                works: works,
-                generation: searchGeneration
-            )
-        }
-    }
-
-    private func enrichVisibleAIPageFullTextInBackground(
-        works pageWorks: [Work],
-        generation: Int
-    ) {
-        let context = captureHistoryMutationContext()
-        guard context.searchGeneration == generation else { return }
-        let candidates = pageWorks.filter { work in
-            aiFullTextDocuments[work.id] == nil
-                && !fullTextReviewSummaryInProgress.contains(work.id)
-                && !aiVisiblePageFullTextInProgress.contains(work.id)
-        }
-        guard !candidates.isEmpty else { return }
-
-        for work in candidates {
-            aiVisiblePageFullTextInProgress.insert(work.id)
-            aiVisiblePageFullTextFailures.removeValue(forKey: work.id)
-        }
-
-        let apiKey = CredentialStore.string(for: .openAlexAPIKey)
-        let semanticScholarAPIKey = CredentialStore.string(for: .semanticScholarAPIKey)
-        let contactEmail = UserDefaults.standard.string(forKey: SettingsKeys.contactEmail)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let fullTextService = fullTextService
-        let configuration = AIProviderConfiguration.load(activeAIProvider)
-
-        Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.isCurrentHistoryMutationContext(context) {
-                    for work in candidates {
-                        self.aiVisiblePageFullTextInProgress.remove(work.id)
-                    }
-                }
-            }
-            var fullTextPairs: [(work: Work, document: FullTextDocument)] = []
-
-            await withTaskGroup(of: (Work, FullTextDocument?).self) { group in
-                for work in candidates {
-                    group.addTask {
-                        let document = await Self.loadFullTextWithSoftTimeout(
-                            service: fullTextService,
-                            work: work,
-                            apiKey: apiKey,
-                            contactEmail: contactEmail,
-                            semanticScholarAPIKey: semanticScholarAPIKey,
-                            seconds: 14
-                        )
-                        return (work, document)
-                    }
-                }
-
-                for await (work, document) in group {
-                    guard self.isCurrentHistoryMutationContext(context) else {
-                        group.cancelAll()
-                        return
-                    }
-
-                    defer {
-                        self.aiVisiblePageFullTextInProgress.remove(work.id)
-                    }
-
-                    guard let document,
-                          document.source.isFullText,
-                          Self.fullTextDocument(document, matches: work) else {
-                        self.aiVisiblePageFullTextFailures[work.id] =
-                            "No accessible full text was found automatically for this paper, so an AI summary could not be generated."
-                        continue
-                    }
-
-                    self.aiFullTextDocuments[work.id] = document
-                    self.aiVisiblePageFullTextFailures.removeValue(forKey: work.id)
-                    fullTextPairs.append((work, document))
-
-                    var levels = self.aiEvidenceLevels
-                    if levels[work.id] == nil
-                        || levels[work.id] == "仅摘要精排"
-                        || levels[work.id] == "AI 摘要粗排" {
-                        levels[work.id] = "全文已读取"
-                        self.aiEvidenceLevels = levels
-                    }
-                }
-            }
-
-            guard self.isCurrentHistoryMutationContext(context),
-                  !fullTextPairs.isEmpty else {
-                return
-            }
-            self.startFullTextReviewSummaryGeneration(
-                for: fullTextPairs,
-                configuration: configuration
-            )
-            self.scheduleCompletedStageSave()
-        }
     }
 
     private func analyzeVisiblePageInBackground() {
@@ -2378,6 +2209,7 @@ final class SearchStore: ObservableObject {
     }
 
     private func ensureSearchIsActive(_ generation: Int) throws {
+        try Task.checkCancellation()
         guard generation == searchGeneration else {
             throw CancellationError()
         }

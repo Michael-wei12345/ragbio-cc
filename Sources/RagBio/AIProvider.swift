@@ -382,7 +382,6 @@ enum AISearchPipelineError: LocalizedError {
     case searchPlanning(String)
     case openAlexKeyRequired
     case candidateFetch(String)
-    case coarseRanking(String)
 
     var errorDescription: String? {
         switch self {
@@ -392,8 +391,6 @@ enum AISearchPipelineError: LocalizedError {
             return "AI 搜索需要 OpenAlex 免费 API Key。请在“设置 → 信息源与访问权限 → OpenAlex”中填写并测试，避免匿名搜索接口超时。"
         case let .candidateFetch(message):
             return "OpenAlex 候选论文获取失败：\(message)"
-        case let .coarseRanking(message):
-            return "AI 论文粗排失败：\(message)"
         }
     }
 }

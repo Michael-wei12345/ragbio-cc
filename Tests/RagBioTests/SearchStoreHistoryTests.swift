@@ -254,17 +254,18 @@ import Testing
 
     @Test func restoreUsesConservativePersistedAIStage() {
         let work = makeWork()
-        let cases: [(SearchHistoryAIStage?, AIRerankState, AISecondRerankState)] = [
-            (nil, .localReady(candidates: 1), .idle),
-            (.localCandidates, .localReady(candidates: 1), .idle),
-            (.coarseRanking, .completed(candidates: 1, retained: 1), .idle),
+        let cases: [(SearchHistoryAIStage?, AIRerankState, AISecondRerankState, SearchHistoryAIStage)] = [
+            (nil, .localReady(candidates: 1), .idle, .localCandidates),
+            (.localCandidates, .localReady(candidates: 1), .idle, .localCandidates),
+            (.coarseRanking, .completed(candidates: 1, retained: 1), .idle, .coarseRanking),
             (
                 .evidenceRanking,
                 .completed(candidates: 1, retained: 1),
-                .completed(fullText: 1, abstractOnly: 0, retained: 1)
+                .idle,
+                .coarseRanking
             )
         ]
-        for (stage, coarse, evidence) in cases {
+        for (stage, coarse, evidence, expectedSavedStage) in cases {
             var record = makeRecord(query: "stage", works: [work], date: Date())
             record.snapshot.completedAIStage = stage
             record.snapshot.aiEvidenceLevels = [work.id: "全文段落精排"]
@@ -276,7 +277,7 @@ import Testing
             #expect(store.aiSecondRerankState == evidence)
             #expect(
                 store.makeHistorySnapshot(displayQuery: "stage", revision: 1).completedAIStage
-                    == (stage ?? .localCandidates)
+                    == expectedSavedStage
             )
         }
     }

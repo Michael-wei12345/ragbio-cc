@@ -102,48 +102,40 @@ struct AIQueryPlanner {
         }
     }
 
-    func rankBatch(
+    func rankEvidenceBatch(
         description: String,
-        candidates: [Work],
+        inputs: [AIEvidenceRankingInput],
         configuration: AIProviderConfiguration
     ) async throws -> [AIRankedCandidate] {
         guard configuration.isConfigured else {
             throw AIPlannerError.notConfigured(configuration.provider)
         }
-        guard !candidates.isEmpty else { return [] }
+        guard !inputs.isEmpty else { return [] }
 
-        let candidateText = candidates.enumerated().map { index, work in
-            let abstract = String((work.abstractText ?? "No abstract available").prefix(800))
+        let candidateText = inputs.enumerated().map { index, input in
+            let abstract = String((input.abstract ?? "No abstract available").prefix(600))
+            let passages = input.passages.prefix(2).map { hit in
+                "\(hit.paragraph.locator): \(String(hit.paragraph.text.prefix(700)))"
+            }.joined(separator: "\n")
             return """
             [\(index)]
-            Title: \(work.title)
-            Year: \(work.publicationYear.map(String.init) ?? "unknown")
-            Venue: \(work.venue)
+            Title: \(input.work.title)
+            Year: \(input.work.publicationYear.map(String.init) ?? "unknown")
+            Venue: \(input.work.venue)
             Abstract: \(abstract)
+            Full-text evidence: \(passages.isEmpty ? "Not available" : passages)
             """
         }.joined(separator: "\n\n")
 
         let prompt = """
-        Rank academic papers for the user's ORIGINAL research request. Judge topical relevance, \
-        not keyword overlap alone. Reject papers about another disease, unrelated treatment, \
-        generic cancer statistics, or a tangential mechanism unless it directly answers the \
-        request. Do not invent facts beyond the supplied metadata.
+        Rank these papers for the user's ORIGINAL research request using only the supplied abstract \
+        and full-text evidence. Judge whether each paper actually answers the request, not keyword \
+        overlap. Return exactly one item for every supplied index as JSON:
+        {"rankings":[{"index":0,"score":0,"relevant":false,"reason":"中文证据总结"}]}
 
-        Return only one JSON object:
-        {"rankings":[{"index":0,"score":0,"relevant":false,"reason":"中文内容总结"}]}
-
-        Requirements:
-        - Return exactly one item for every supplied index.
-        - score is an integer from 0 to 100.
-        - relevant is true only when the paper is genuinely useful for the request.
-        - A missing abstract may lower confidence but must not automatically make a paper irrelevant.
-        - reason must be a brief Simplified Chinese summary of the paper content based only on
-          the supplied title and abstract. It should say what the paper studies, reviews, reports,
-          or finds. Do not write generic relevance phrases such as "与主题相关", "可作为证据",
-          or "可用于判断研究范围".
-        - Do not copy a sentence directly from the abstract. Paraphrase it as a Chinese one-sentence
-          paper summary.
-        - Keep reason to one short sentence.
+        score must be an integer from 0 to 100. relevant is true only when the supplied evidence is \
+        genuinely useful. reason must be one short Simplified Chinese sentence based only on the \
+        supplied evidence. Do not invent facts or use outside knowledge.
 
         Original request: \(description)
 
@@ -154,12 +146,15 @@ struct AIQueryPlanner {
         let data = try await generateJSON(
             prompt: prompt,
             configuration: configuration,
-            maxTokens: max(1_200, candidates.count * 80),
-            timeout: 18
+            maxTokens: max(1_200, inputs.count * 80),
+            timeout: 25
         )
         let decoded = try decodeJSON(AIRankingResponse.self, from: data)
-        let valid = decoded.rankings.filter { candidates.indices.contains($0.index) }
-        guard !valid.isEmpty else { throw AIPlannerError.invalidRanking }
+        let valid = decoded.rankings.filter { inputs.indices.contains($0.index) }
+        guard valid.count == inputs.count,
+              Set(valid.map(\.index)).count == inputs.count else {
+            throw AIPlannerError.invalidRanking
+        }
         return valid
     }
 

@@ -85,8 +85,8 @@ private struct SidebarView: View {
         switch store.aiSecondRerankState {
         case let .fetchingEvidence(completed, total):
             return "正在准备摘要与缓存证据 \(completed)/\(total)…"
-        case let .rankingEvidence(completed, total):
-            return "AI 正在进行快速证据重排 \(completed)/\(total)…"
+        case .rankingEvidence:
+            return "AI 正在精排第 \(store.currentPage) 页全文证据…"
         case let .refiningFullText(completed, total):
             return "结果已可用，后台补强全文 \(completed)/\(total)…"
         default:
@@ -96,11 +96,11 @@ private struct SidebarView: View {
         case .fetchingCandidates:
             return "正在并行获取 2 批候选论文…"
         case let .localReady(candidates):
-            return "已显示 \(candidates) 篇临时候选，等待 AI 精排…"
+            return "已显示 \(candidates) 篇候选，正在准备第 \(store.currentPage) 页全文精排…"
         case let .ranking(completed, total):
             return "AI 正在重排候选论文 \(completed)/\(total)…"
         case let .failed(_, candidates):
-            return "AI 粗排暂未返回，当前显示 \(candidates) 篇临时候选…"
+            return "候选排序未完成，当前显示 \(candidates) 篇结果…"
         default:
             return "正在检索 OpenAlex…"
         }
@@ -129,11 +129,11 @@ private struct SidebarView: View {
                 default:
                     switch store.aiRerankState {
                     case let .localReady(candidates):
-                        Text("临时候选 \(candidates) 篇，等待 AI 精排")
+                        Text("候选 \(candidates) 篇 · 第 \(store.currentPage) 页等待 AI 全文精排")
                     case let .completed(candidates, retained):
-                        Text("AI 从 \(candidates) 篇中粗排保留 \(retained) 篇")
+                        Text("已获取 \(candidates) 篇候选 · 全部保留 \(retained) 篇")
                     case let .failed(_, candidates):
-                        Text("AI 粗排未完成 · 临时候选 \(candidates) 篇")
+                        Text("候选排序未完成 · 当前保留 \(candidates) 篇")
                     default:
                         Text("约 \(store.totalCount.formatted()) 条结果")
                     }
@@ -242,7 +242,7 @@ private struct SearchHeader: View {
                     .foregroundStyle(.secondary)
             case let .localReady(candidates):
                 Label(
-                    "已先显示 \(candidates) 篇临时候选，后台继续 AI 精排",
+                    "已先显示 \(candidates) 篇候选，后台读取当前页全文并进行 AI 精排",
                     systemImage: "bolt"
                 )
                 .font(.caption)
@@ -255,14 +255,14 @@ private struct SearchHeader: View {
                 }
             case let .completed(candidates, retained):
                 Label(
-                    "已分析 \(candidates) 篇候选，排除明显无关后保留 \(retained) 篇",
+                    "已获取 \(candidates) 篇候选，列表保留 \(retained) 篇",
                     systemImage: "checkmark.circle"
                 )
                 .font(.caption)
                 .foregroundStyle(.green)
             case let .failed(message, candidates):
                 Label(
-                    "\(message)，当前保留 \(candidates) 篇临时候选",
+                    "\(message)，当前保留 \(candidates) 篇候选",
                     systemImage: "info.circle"
                 )
                 .font(.caption)
@@ -278,11 +278,12 @@ private struct SearchHeader: View {
                     Text("准备证据 \(completed)/\(total)")
                         .font(.caption.monospacedDigit())
                 }
-            case let .rankingEvidence(completed, total):
+            case .rankingEvidence:
                 HStack {
-                    ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                    Text("快速证据重排 \(completed)/\(total)")
-                        .font(.caption.monospacedDigit())
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("第 \(store.currentPage) 页 AI 全文精排中…")
+                        .font(.caption)
                 }
             case let .refiningFullText(completed, total):
                 HStack {
@@ -292,14 +293,14 @@ private struct SearchHeader: View {
                 }
             case let .completed(fullText, abstractOnly, retained):
                 Label(
-                    "二次重排完成：\(fullText) 篇使用全文段落，\(abstractOnly) 篇仅用摘要；列表仍保留 \(retained) 篇，可继续翻页",
+                    "第 \(store.currentPage) 页 AI 全文精排完成：\(fullText) 篇使用全文段落，\(abstractOnly) 篇仅用摘要；列表仍保留 \(retained) 篇",
                     systemImage: "text.magnifyingglass"
                 )
                 .font(.caption)
                 .foregroundStyle(.green)
             case let .failed(message):
                 Label(
-                    "正文二次重排失败，已保留摘要粗排结果：\(message)",
+                    message,
                     systemImage: "exclamationmark.triangle"
                 )
                 .font(.caption)
