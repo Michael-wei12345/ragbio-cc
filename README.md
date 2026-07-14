@@ -94,6 +94,15 @@ Unpaywall 要求 API 请求携带联系邮箱，可在“设置 → 开放全文
 ~/Library/Application Support/RagBio/FullText/
 ```
 
+AI Search History 保存在：
+
+```text
+~/Library/Application Support/RagBio/SearchHistory/index.json
+~/Library/Application Support/RagBio/SearchHistory/records/<history-id>.json
+```
+
+首次启用 AI Search History 时，RagBio 会一次性删除旧的 Projects 和 Autosaved Search 数据，且不会迁移这些旧搜索。历史记录包含论文元数据、筛选状态、`Use` 选择和已生成的摘要；不包含 API 凭据或原始全文内容。原始全文仍只保存在独立的 FullText 缓存中。
+
 ## 数据边界
 
 并非每篇论文都有合法开放全文。RagBio 不绕过付费墙；对于你有权访问的论文，可以使用“导入 PDF”。扫描版 PDF 可能因为缺少文本层而无法解析。

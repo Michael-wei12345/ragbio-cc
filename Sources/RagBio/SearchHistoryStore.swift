@@ -47,6 +47,7 @@ actor SearchHistoryStore {
     private(set) var isUseReturnDelayed = false
     private(set) var isFirstUsableReturnDelayed = false
     private(set) var isIndexReturnDelayed = false
+    private(set) var isPersistenceDelayed = false
 
     init(
         root customRoot: URL? = nil,
@@ -111,7 +112,7 @@ actor SearchHistoryStore {
             throw SearchHistoryStoreError.recordNotFound
         }
         guard let record = try? decoder.decode(SearchHistoryRecord.self, from: data),
-              record.schemaVersion == SearchHistoryRecord.currentSchemaVersion else {
+              isValid(record, expectedID: id) else {
             try? omitFromIndex(id: id)
             throw SearchHistoryStoreError.corruptRecord
         }
@@ -128,6 +129,9 @@ actor SearchHistoryStore {
 
     @discardableResult
     func save(_ record: SearchHistoryRecord) throws -> SearchHistoryIndex {
+        guard isValid(record, expectedID: record.id) else {
+            throw SearchHistoryStoreError.corruptRecord
+        }
         var index = try readIndexOrRebuild()
         if index.summaries.contains(where: {
             $0.normalizedQuery == record.normalizedQuery && $0.id != record.id
@@ -268,7 +272,7 @@ actor SearchHistoryStore {
     private func readIndexOrRebuild() throws -> SearchHistoryIndex {
         if let data = try? Data(contentsOf: indexURL),
            let index = try? decoder.decode(SearchHistoryIndex.self, from: data),
-           index.schemaVersion == SearchHistoryIndex.currentSchemaVersion {
+           isValid(index) {
             return index
         }
         let rebuilt = try rebuildIndex()
@@ -278,6 +282,8 @@ actor SearchHistoryStore {
 
     private func delayTokenizedPersistence() async throws {
         guard persistenceDelay != .zero else { return }
+        isPersistenceDelayed = true
+        defer { isPersistenceDelayed = false }
         try await Task.sleep(for: persistenceDelay)
     }
 
@@ -288,11 +294,19 @@ actor SearchHistoryStore {
             includingPropertiesForKeys: nil
         ).filter { $0.pathExtension == "json" }
         let decoded = urls.compactMap { url -> SearchHistoryRecord? in
+            guard let filenameID = UUID(
+                uuidString: url.deletingPathExtension().lastPathComponent
+            ) else { return nil }
             guard let data = try? Data(contentsOf: url),
                   let record = try? decoder.decode(SearchHistoryRecord.self, from: data),
-                  record.schemaVersion == SearchHistoryRecord.currentSchemaVersion else { return nil }
+                  isValid(record, expectedID: filenameID) else { return nil }
             return record
-        }.sorted { $0.lastSuccessfulSearchAt > $1.lastSuccessfulSearchAt }
+        }.sorted {
+            if $0.lastSuccessfulSearchAt != $1.lastSuccessfulSearchAt {
+                return $0.lastSuccessfulSearchAt > $1.lastSuccessfulSearchAt
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
         var seenQueries = Set<String>()
         let summaries = decoded.compactMap { record -> SearchHistorySummary? in
             guard seenQueries.insert(record.normalizedQuery).inserted else { return nil }
@@ -316,6 +330,39 @@ actor SearchHistoryStore {
             paperCount: record.snapshot.rankedWorks.count,
             useCount: record.useLedger.papers.count
         )
+    }
+
+    private func isValid(_ record: SearchHistoryRecord, expectedID: UUID) -> Bool {
+        let normalized = SearchQueryIdentity.normalize(record.displayQuery)
+        return record.schemaVersion == SearchHistoryRecord.currentSchemaVersion
+            && record.id == expectedID
+            && !record.normalizedQuery.isEmpty
+            && record.normalizedQuery == normalized
+            && SearchQueryIdentity.normalize(record.snapshot.displayQuery) == normalized
+    }
+
+    private func isValid(_ index: SearchHistoryIndex) -> Bool {
+        guard index.schemaVersion == SearchHistoryIndex.currentSchemaVersion else { return false }
+        var ids = Set<UUID>()
+        var queries = Set<String>()
+        for (offset, summary) in index.summaries.enumerated() {
+            guard ids.insert(summary.id).inserted,
+                  queries.insert(summary.normalizedQuery).inserted,
+                  !summary.normalizedQuery.isEmpty,
+                  summary.normalizedQuery == SearchQueryIdentity.normalize(summary.displayQuery),
+                  summary.paperCount >= 0,
+                  summary.useCount >= 0 else { return false }
+            if offset > 0,
+               index.summaries[offset - 1].lastSuccessfulSearchAt
+                    < summary.lastSuccessfulSearchAt {
+                return false
+            }
+        }
+        if let lastOpened = index.lastOpenedHistoryID,
+           !ids.contains(lastOpened) {
+            return false
+        }
+        return true
     }
 
     private func writeIndex(_ index: SearchHistoryIndex) throws {

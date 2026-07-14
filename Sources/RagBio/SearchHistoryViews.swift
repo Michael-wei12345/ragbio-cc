@@ -15,7 +15,7 @@ enum SearchHistorySuggestions {
     }
 
     static func canSubmit(query: String, isLoading: Bool) -> Bool {
-        !isLoading && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 

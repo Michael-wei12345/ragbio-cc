@@ -2,6 +2,12 @@ import AppKit
 import SwiftUI
 import Translation
 
+enum ArticleSummaryTrigger {
+    static func shouldGenerate(from previousTab: Int, to selectedTab: Int) -> Bool {
+        previousTab == 0 && selectedTab == 1
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var store: SearchStore
 
@@ -621,7 +627,19 @@ private struct WorkDetail: View {
             VStack(alignment: .leading, spacing: 22) {
                 header
                 Divider()
-                Picker("", selection: $selectedTab) {
+                Picker("", selection: Binding(
+                    get: { selectedTab },
+                    set: { newTab in
+                        let previousTab = selectedTab
+                        selectedTab = newTab
+                        if ArticleSummaryTrigger.shouldGenerate(
+                            from: previousTab,
+                            to: newTab
+                        ) {
+                            Task { await generateArticleSummary() }
+                        }
+                    }
+                )) {
                     Text("abstract").tag(0)
                     Text("summary").tag(1)
                 }
@@ -790,9 +808,6 @@ private struct WorkDetail: View {
                     onRetry: { Task { await generateArticleSummary() } }
                 )
             }
-        }
-        .task(id: work.id) {
-            await generateArticleSummary()
         }
     }
 

@@ -1,9 +1,240 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import RagBio
 
 @MainActor
 @Suite struct SearchStoreHistoryTests {
+    @Test func mountingRestoredSelectionDoesNotStartNetworkOrSummaryWork() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        let work = makeWork(
+            id: "https://openalex.org/W\(UUID().uuidString)",
+            doi: "10.1000/restore-\(UUID().uuidString)"
+        )
+        let record = makeRecord(query: "restored", works: [work], date: Date())
+        let historyStore = SearchHistoryStore(
+            root: historyRoot,
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        _ = try await historyStore.save(record)
+
+        RecordingURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RecordingURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let store = SearchStore(
+            client: OpenAlexClient(session: session),
+            fullTextService: FullTextService(session: session),
+            aiQueryPlanner: AIQueryPlanner(session: session),
+            historyStore: historyStore,
+            restoreOnInit: false
+        )
+        await store.openHistory(record.id)
+
+        let hostingView = NSHostingView(rootView: ContentView(store: store))
+        hostingView.frame = NSRect(x: 0, y: 0, width: 1_100, height: 760)
+        hostingView.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(250))
+
+        #expect(RecordingURLProtocol.requestCount == 0)
+        #expect(store.fullTextState == .idle)
+        #expect(store.articleSummaryInProgress.isEmpty)
+        #expect(store.aiVisiblePageFullTextInProgress.isEmpty)
+        withExtendedLifetime(hostingView) {}
+    }
+
+    @Test func useProjectionKeepsLedgerOrderAndPrefersRefreshedStableIdentityMetadata() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let old = makeWork(
+            id: "old-selection-id",
+            doi: "10.1000/stable",
+            pmid: nil,
+            title: "Old title",
+            publisherURL: "https://old.example/paper"
+        )
+        let missing = makeWork(
+            id: "ledger-only-id",
+            doi: "10.1000/missing",
+            pmid: nil,
+            title: "Ledger only"
+        )
+        let refreshed = makeWork(
+            id: "refreshed-id",
+            doi: "10.1000/stable",
+            pmid: nil,
+            title: "Refreshed title",
+            publisherURL: "https://new.example/paper"
+        )
+        let current = makeWork(
+            id: "current-id",
+            doi: "10.1000/current",
+            pmid: nil,
+            title: "Current unrelated"
+        )
+        var ledger = UseLedger()
+        ledger.mark(old, at: Date(timeIntervalSince1970: 1))
+        ledger.mark(missing, at: Date(timeIntervalSince1970: 2))
+        var record = makeRecord(
+            query: "gut",
+            works: [current],
+            date: Date(),
+            useLedger: ledger
+        )
+        record.snapshot.rankedWorks = [refreshed, current]
+        record.snapshot.selectedWorkID = old.id
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+
+        await store.openHistory(record.id)
+        store.decisionFilter = .use
+
+        #expect(store.useWorks.map(\.id) == [refreshed.id, missing.id])
+        #expect(store.useWorks.map(\.title) == ["Refreshed title", "Ledger only"])
+        #expect(store.filteredWorks.map(\.id) == [refreshed.id, missing.id])
+        #expect(store.selectedWork?.id == refreshed.id)
+        #expect(store.workTitleLookup[refreshed.id] == "Refreshed title")
+        #expect(store.workTitleLookup[missing.id] == "Ledger only")
+        #expect(store.workURLLookup[refreshed.id]?.absoluteString == "https://new.example/paper")
+        store.generateEvidenceTable()
+        #expect(store.currentEvidenceTable?.basedOnWorkIDs == [refreshed.id, missing.id])
+    }
+
+    @Test func useProjectionDrivesEvidenceTableAndMarkedFieldSummarySources() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let visible = makeWork(id: "visible", doi: "10.1000/visible")
+        let ledgerOnly = makeWork(id: "ledger-only", doi: "10.1000/ledger")
+        var ledger = UseLedger()
+        ledger.mark(ledgerOnly)
+        let record = makeRecord(
+            query: "gut",
+            works: [visible],
+            date: Date(),
+            useLedger: ledger
+        )
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(record.id)
+
+        store.decisionFilter = .use
+        store.generateEvidenceTable()
+
+        #expect(store.currentEvidenceTable?.basedOnWorkIDs == [ledgerOnly.id])
+        #expect(store.currentEvidenceTable?.rows.map(\.title) == [ledgerOnly.title])
+        #expect(store.fieldSummarySourceWorks(scope: .marked).map(\.id) == [ledgerOnly.id])
+    }
+
+    @Test func replacementSearchInvalidatesDelayedFirstStageBeforeItCanPublish() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession"),
+            persistenceDelay: .milliseconds(200)
+        )
+        try await historyStore.bootstrap()
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        let firstGeneration = await store.beginHistorySearch(displayQuery: "first")
+        let firstWork = makeWork(id: "first", doi: "10.1000/first")
+        store.restoreHistoryRecord(makeRecord(query: "first", works: [firstWork], date: Date()))
+        let pending = Task { @MainActor in
+            await store.commitFirstUsableHistoryStage(
+                displayQuery: "first",
+                startedAt: Date(),
+                generation: firstGeneration
+            )
+        }
+        while await !historyStore.isPersistenceDelayed { await Task.yield() }
+
+        _ = await store.beginHistorySearch(displayQuery: "second")
+        await pending.value
+
+        #expect(store.query == "second")
+        #expect(store.currentHistoryID == nil)
+        let index = try await historyStore.loadIndex()
+        #expect(!index.summaries.contains { $0.normalizedQuery == "first" })
+    }
+
+    @Test func historiesRestoreIndependentDecisionFiltersAcrossOpenAndRestart() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyRoot = root.appendingPathComponent("SearchHistory")
+        let historyStore = SearchHistoryStore(
+            root: historyRoot,
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        var useRecord = makeRecord(
+            query: "use history",
+            works: [makeWork()],
+            date: Date(timeIntervalSince1970: 1)
+        )
+        useRecord.snapshot.decisionFilter = .use
+        var allRecord = makeRecord(
+            query: "all history",
+            works: [makeWork(id: "W2", doi: "10.1000/two")],
+            date: Date(timeIntervalSince1970: 2)
+        )
+        allRecord.snapshot.decisionFilter = .all
+        _ = try await historyStore.save(useRecord)
+        _ = try await historyStore.save(allRecord)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+
+        await store.openHistory(useRecord.id)
+        #expect(store.decisionFilter == .use)
+        await store.openHistory(allRecord.id)
+        #expect(store.decisionFilter == .all)
+        await store.openHistory(useRecord.id)
+        #expect(store.decisionFilter == .use)
+
+        let restarted = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await restarted.loadInitialHistory()
+        #expect(restarted.currentHistoryID == useRecord.id)
+        #expect(restarted.decisionFilter == .use)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(try await historyStore.loadRecord(id: useRecord.id).snapshot.revision == 0)
+        #expect(try await historyStore.loadRecord(id: allRecord.id).snapshot.revision == 0)
+    }
+
+    @Test func restoreUsesConservativePersistedAIStage() {
+        let work = makeWork()
+        let cases: [(SearchHistoryAIStage?, AIRerankState, AISecondRerankState)] = [
+            (nil, .localReady(candidates: 1), .idle),
+            (.localCandidates, .localReady(candidates: 1), .idle),
+            (.coarseRanking, .completed(candidates: 1, retained: 1), .idle),
+            (
+                .evidenceRanking,
+                .completed(candidates: 1, retained: 1),
+                .completed(fullText: 1, abstractOnly: 0, retained: 1)
+            )
+        ]
+        for (stage, coarse, evidence) in cases {
+            var record = makeRecord(query: "stage", works: [work], date: Date())
+            record.snapshot.completedAIStage = stage
+            record.snapshot.aiEvidenceLevels = [work.id: "全文段落精排"]
+            let store = SearchStore(restoreOnInit: false)
+
+            store.restoreHistoryRecord(record)
+
+            #expect(store.aiRerankState == coarse)
+            #expect(store.aiSecondRerankState == evidence)
+            #expect(
+                store.makeHistorySnapshot(displayQuery: "stage", revision: 1).completedAIStage
+                    == (stage ?? .localCandidates)
+            )
+        }
+    }
     @Test func openingHistoryRestoresSnapshotWithoutStartingSearch() async throws {
         let root = try makeTemporaryDirectory()
         let historyStore = SearchHistoryStore(
@@ -70,8 +301,7 @@ import Testing
                 expectedGeneration: firstContext.searchGeneration
             )
         }
-        await Task.yield()
-        try await Task.sleep(for: .milliseconds(25))
+        while await !historyStore.isPersistenceDelayed { await Task.yield() }
 
         await store.openHistory(second.id)
         await pending.value
@@ -112,8 +342,7 @@ import Testing
                 generation: generation
             )
         }
-        await Task.yield()
-        try await Task.sleep(for: .milliseconds(25))
+        while await !historyStore.isPersistenceDelayed { await Task.yield() }
 
         await store.openHistory(saved.id)
         await pending.value
@@ -389,7 +618,7 @@ import Testing
         #expect(relaunched.currentHistoryRecord?.useLedger.contains(used) == true)
         #expect(!relaunched.isLoading)
         #expect(!relaunched.isRefreshingHistory)
-        #expect(relaunched.aiRerankState == .completed(candidates: 1, retained: 1))
+        #expect(relaunched.aiRerankState == .localReady(candidates: 1))
         #expect(relaunched.aiSecondRerankState == .idle)
         #expect(RecordingURLProtocol.requestCount == 0)
     }
@@ -412,8 +641,7 @@ import Testing
         let pending = Task { @MainActor in
             await store.persistCurrentStage(snapshot, expectedGeneration: stale)
         }
-        await Task.yield()
-        try await Task.sleep(for: .milliseconds(25))
+        while await !historyStore.isPersistenceDelayed { await Task.yield() }
 
         _ = await store.beginHistorySearch(displayQuery: "second")
 
@@ -762,8 +990,7 @@ import Testing
                 generation: generation
             )
         }
-        await Task.yield()
-        try await Task.sleep(for: .milliseconds(25))
+        while await !historyStore.isPersistenceDelayed { await Task.yield() }
 
         _ = try await historyStore.setUse(historyID: old.id, work: oldWork, isUsed: true)
         await pending.value
@@ -802,8 +1029,7 @@ import Testing
                 generation: generation
             )
         }
-        await Task.yield()
-        try await Task.sleep(for: .milliseconds(25))
+        while await !historyStore.isPersistenceDelayed { await Task.yield() }
 
         _ = try await historyStore.setUse(
             historyID: old.id,
@@ -855,8 +1081,7 @@ import Testing
                 generation: stale
             )
         }
-        await Task.yield()
-        try await Task.sleep(for: .milliseconds(25))
+        while await !historyStore.isPersistenceDelayed { await Task.yield() }
 
         _ = await store.beginHistorySearch(displayQuery: "second")
 

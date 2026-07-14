@@ -118,7 +118,22 @@ struct SearchHistoryRecord: Codable, Equatable, Identifiable {
     var useLedger: UseLedger
 }
 
-struct SearchHistorySnapshot: Codable, Equatable {
+enum SearchHistoryAIStage: String, Codable, Equatable {
+    case localCandidates
+    case coarseRanking
+    case evidenceRanking
+
+    static func completed(
+        coarse: AIRerankState,
+        evidence: AISecondRerankState
+    ) -> SearchHistoryAIStage {
+        if case .completed = evidence { return .evidenceRanking }
+        if case .completed = coarse { return .coarseRanking }
+        return .localCandidates
+    }
+}
+
+struct SearchHistorySnapshot: Encodable, Equatable {
     var revision: Int
     var displayQuery: String
     var retrievalQuery: String
@@ -142,4 +157,59 @@ struct SearchHistorySnapshot: Codable, Equatable {
     var articleSummaries: [String: String]
     var currentEvidenceTable: EvidenceTable?
     var currentFieldScanReport: FieldScanReport?
+    var decisionFilter: ScanDecisionFilter = .all
+    var completedAIStage: SearchHistoryAIStage?
+}
+
+extension SearchHistorySnapshot: Decodable {
+    private enum CodingKeys: String, CodingKey {
+        case revision, displayQuery, retrievalQuery, sort, fromYearEnabled, fromYear
+        case openAccessOnly, allWorks, rankedWorks, totalCount, currentPage, selectedWorkID
+        case lastAIPlan, aiReasons, aiScores, aiEvidenceLevels, aiSearchNotice, pubMedNotice
+        case searchTimingSummary, fullTextReviewSummaries, articleSummaries
+        case currentEvidenceTable, currentFieldScanReport, decisionFilter, completedAIStage
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        revision = try values.decode(Int.self, forKey: .revision)
+        displayQuery = try values.decode(String.self, forKey: .displayQuery)
+        retrievalQuery = try values.decode(String.self, forKey: .retrievalQuery)
+        sort = try values.decode(SearchSort.self, forKey: .sort)
+        fromYearEnabled = try values.decode(Bool.self, forKey: .fromYearEnabled)
+        fromYear = try values.decode(Int.self, forKey: .fromYear)
+        openAccessOnly = try values.decode(Bool.self, forKey: .openAccessOnly)
+        allWorks = try values.decode([Work].self, forKey: .allWorks)
+        rankedWorks = try values.decode([Work].self, forKey: .rankedWorks)
+        totalCount = try values.decode(Int.self, forKey: .totalCount)
+        currentPage = try values.decode(Int.self, forKey: .currentPage)
+        selectedWorkID = try values.decodeIfPresent(Work.ID.self, forKey: .selectedWorkID)
+        lastAIPlan = try values.decodeIfPresent(AISearchPlan.self, forKey: .lastAIPlan)
+        aiReasons = try values.decode([String: String].self, forKey: .aiReasons)
+        aiScores = try values.decode([String: Int].self, forKey: .aiScores)
+        aiEvidenceLevels = try values.decode([String: String].self, forKey: .aiEvidenceLevels)
+        aiSearchNotice = try values.decodeIfPresent(String.self, forKey: .aiSearchNotice)
+        pubMedNotice = try values.decodeIfPresent(String.self, forKey: .pubMedNotice)
+        searchTimingSummary = try values.decodeIfPresent(String.self, forKey: .searchTimingSummary)
+        fullTextReviewSummaries = try values.decode(
+            [String: LiteratureReviewSummary].self,
+            forKey: .fullTextReviewSummaries
+        )
+        articleSummaries = try values.decode([String: String].self, forKey: .articleSummaries)
+        currentEvidenceTable = try values.decodeIfPresent(
+            EvidenceTable.self,
+            forKey: .currentEvidenceTable
+        )
+        currentFieldScanReport = try values.decodeIfPresent(
+            FieldScanReport.self,
+            forKey: .currentFieldScanReport
+        )
+        decisionFilter = try values.decodeIfPresent(String.self, forKey: .decisionFilter) == "use"
+            ? .use
+            : .all
+        completedAIStage = try values.decodeIfPresent(
+            SearchHistoryAIStage.self,
+            forKey: .completedAIStage
+        )
+    }
 }

@@ -43,6 +43,121 @@ import Testing
         #expect(try await store.loadRecord(id: valid.id) == valid)
     }
 
+    @Test func loadRejectsValidJSONWhoseRequestedAndStoredIDsDiffer() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        try await store.bootstrap()
+        let requested = makeRecord(query: "requested", works: [makeWork()], date: Date())
+        _ = try await store.save(requested)
+        let foreign = makeRecord(query: "foreign", works: [makeWork()], date: Date())
+        try JSONEncoder().encode(foreign).write(
+            to: root.appendingPathComponent("records/\(requested.id.uuidString).json")
+        )
+
+        var message: String?
+        do {
+            _ = try await store.loadRecord(id: requested.id)
+        } catch {
+            message = error.localizedDescription
+        }
+
+        #expect(message == "This search history is damaged and could not be opened.")
+        #expect(try await store.loadIndex().summaries.isEmpty)
+    }
+
+    @Test func saveRejectsSemanticIdentityMismatchBeforeWriting() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        try await store.bootstrap()
+        var invalid = makeRecord(query: "valid", works: [makeWork()], date: Date())
+        invalid.normalizedQuery = "wrong"
+
+        await #expect(throws: SearchHistoryStoreError.self) {
+            _ = try await store.save(invalid)
+        }
+        #expect(try await store.loadIndex().summaries.isEmpty)
+    }
+
+    @Test func semanticInvalidIndexesRebuildWithoutReadingRecordBodiesOnValidPath() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        try await store.bootstrap()
+        let older = makeRecord(query: "older", works: [], date: Date(timeIntervalSince1970: 1))
+        let newer = makeRecord(query: "newer", works: [], date: Date(timeIntervalSince1970: 2))
+        _ = try await store.save(older)
+        _ = try await store.save(newer)
+        let indexURL = root.appendingPathComponent("index.json")
+        let validData = try Data(contentsOf: indexURL)
+
+        for corruption in 0..<6 {
+            var object = try #require(
+                JSONSerialization.jsonObject(with: validData) as? [String: Any]
+            )
+            var summaries = try #require(object["summaries"] as? [[String: Any]])
+            switch corruption {
+            case 0:
+                summaries[1]["id"] = summaries[0]["id"]
+            case 1:
+                summaries[1]["displayQuery"] = summaries[0]["displayQuery"]
+                summaries[1]["normalizedQuery"] = summaries[0]["normalizedQuery"]
+            case 2:
+                summaries[0]["normalizedQuery"] = "bad normalization"
+            case 3:
+                summaries.reverse()
+            case 4:
+                object["lastOpenedHistoryID"] = UUID().uuidString
+            default:
+                summaries[0]["paperCount"] = -1
+            }
+            object["summaries"] = summaries
+            try JSONSerialization.data(withJSONObject: object).write(to: indexURL)
+
+            let rebuilt = try await store.loadIndex()
+
+            #expect(rebuilt.summaries.map(\.id) == [newer.id, older.id])
+        }
+    }
+
+    @Test func rebuildValidatesFilenameIdentityAndDeduplicatesNewestSemanticRecord() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let records = root.appendingPathComponent("records")
+        try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+        let older = makeRecord(query: "duplicate", works: [], date: Date(timeIntervalSince1970: 1))
+        let unique = makeRecord(query: "unique", works: [], date: Date(timeIntervalSince1970: 3))
+        let newer = makeRecord(query: " DUPLICATE ", works: [], date: Date(timeIntervalSince1970: 4))
+        var semanticInvalid = makeRecord(query: "invalid", works: [], date: Date(timeIntervalSince1970: 5))
+        semanticInvalid.snapshot.displayQuery = "different"
+        let filenameMismatch = makeRecord(query: "mismatch", works: [], date: Date(timeIntervalSince1970: 6))
+        let encoder = JSONEncoder()
+        for record in [older, unique, newer, semanticInvalid] {
+            try encoder.encode(record).write(
+                to: records.appendingPathComponent("\(record.id.uuidString).json")
+            )
+        }
+        try encoder.encode(filenameMismatch).write(
+            to: records.appendingPathComponent("\(UUID().uuidString).json")
+        )
+        try Data("broken".utf8).write(to: root.appendingPathComponent("index.json"))
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+
+        let rebuilt = try await store.loadIndex()
+
+        #expect(rebuilt.summaries.map(\.id) == [newer.id, unique.id])
+        #expect(rebuilt.summaries.map(\.normalizedQuery) == ["duplicate", "unique"])
+    }
+
     @Test func largeValidIndexLoadsNewestFirstWithoutDecodingDamagedRecord() async throws {
         let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
         let legacyRoot = root.deletingLastPathComponent().appendingPathComponent("SearchSession")
@@ -191,6 +306,8 @@ import Testing
 
         var changed = record
         changed.displayQuery = "changed"
+        changed.normalizedQuery = "changed"
+        changed.snapshot.displayQuery = "changed"
         do {
             _ = try await store.save(changed)
             Issue.record("Expected save to fail")

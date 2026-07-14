@@ -52,7 +52,7 @@ final class SearchStore: ObservableObject {
     @Published var currentEvidenceTable: EvidenceTable?
     @Published var decisionFilter: ScanDecisionFilter = .all {
         didSet {
-            guard decisionFilter != oldValue else { return }
+            guard decisionFilter != oldValue, !isRestoringHistory else { return }
             scheduleCompletedStageSave()
         }
     }
@@ -88,6 +88,7 @@ final class SearchStore: ObservableObject {
     private var historyRefreshFallbackRecord: SearchHistoryRecord?
     private var useMutationRevision = 0
     private var useMutationTask: Task<Void, Never>?
+    private var isRestoringHistory = false
     let pageSize = 20
     private let aiCandidateLimit = 50
     private let aiCandidatePageSize = 50
@@ -248,11 +249,18 @@ final class SearchStore: ObservableObject {
             fullTextReviewSummaries: fullTextReviewSummaries,
             articleSummaries: articleSummaries,
             currentEvidenceTable: currentEvidenceTable,
-            currentFieldScanReport: currentFieldScanReport
+            currentFieldScanReport: currentFieldScanReport,
+            decisionFilter: decisionFilter,
+            completedAIStage: SearchHistoryAIStage.completed(
+                coarse: aiRerankState,
+                evidence: aiSecondRerankState
+            )
         )
     }
 
     func restoreHistoryRecord(_ record: SearchHistoryRecord) {
+        isRestoringHistory = true
+        defer { isRestoringHistory = false }
         let snapshot = record.snapshot
         query = record.displayQuery
         sort = snapshot.sort
@@ -279,7 +287,7 @@ final class SearchStore: ObservableObject {
         currentHistoryID = record.id
         currentHistoryRecord = record
         historyRevision = snapshot.revision
-        decisionFilter = decisionFilter == .use ? .use : .all
+        decisionFilter = snapshot.decisionFilter
         applyUseLedgerToVisibleWorks(record.useLedger)
         evidence = EvidenceExtractor.extract(query: snapshot.retrievalQuery, works: works)
         fullTextState = .idle
@@ -297,20 +305,29 @@ final class SearchStore: ObservableObject {
         fullTextReviewSummaryErrors = [:]
         aiVisiblePageFullTextInProgress = []
         aiVisiblePageFullTextFailures = [:]
-        aiRerankState = .completed(
-            candidates: max(snapshot.totalCount, snapshot.rankedWorks.count),
-            retained: snapshot.rankedWorks.count
-        )
-        let levels = snapshot.aiEvidenceLevels.values
-        let fullText = levels.filter { $0.contains("全文") }.count
-        let abstractOnly = levels.filter { $0.contains("摘要") }.count
-        aiSecondRerankState = fullText + abstractOnly == 0
-            ? .idle
-            : .completed(
-                fullText: fullText,
-                abstractOnly: abstractOnly,
+        let candidates = max(snapshot.totalCount, snapshot.rankedWorks.count)
+        switch snapshot.completedAIStage ?? .localCandidates {
+        case .localCandidates:
+            aiRerankState = .localReady(candidates: candidates)
+            aiSecondRerankState = .idle
+        case .coarseRanking:
+            aiRerankState = .completed(
+                candidates: candidates,
                 retained: snapshot.rankedWorks.count
             )
+            aiSecondRerankState = .idle
+        case .evidenceRanking:
+            aiRerankState = .completed(
+                candidates: candidates,
+                retained: snapshot.rankedWorks.count
+            )
+            let levels = snapshot.aiEvidenceLevels.values
+            aiSecondRerankState = .completed(
+                fullText: levels.filter { $0.contains("全文") }.count,
+                abstractOnly: levels.filter { $0.contains("摘要") }.count,
+                retained: snapshot.rankedWorks.count
+            )
+        }
     }
 
     func captureHistoryMutationContext() -> HistoryMutationContext {
@@ -465,20 +482,12 @@ final class SearchStore: ObservableObject {
 
     private func applyUseLedgerToVisibleWorks(_ ledger: UseLedger) {
         var decisions: [String: ScanDecisionRecord] = [:]
-        for paper in ledger.papers {
-            decisions[paper.work.id] = ScanDecisionRecord(
-                workID: paper.work.id,
-                decision: .use,
-                note: nil,
-                updatedAt: paper.selectedAt
-            )
-        }
-        for work in works where ledger.contains(work) {
+        for (paper, work) in zip(ledger.papers, useWorks) {
             decisions[work.id] = ScanDecisionRecord(
                 workID: work.id,
                 decision: .use,
                 note: nil,
-                updatedAt: Date()
+                updatedAt: paper.selectedAt
             )
         }
         scanDecisions = decisions
@@ -620,12 +629,30 @@ final class SearchStore: ObservableObject {
     }
 
     var selectedWork: Work? {
-        works.first { $0.id == selection }
+        guard let selection else { return nil }
+        if let current = (aiRankedWorks + works).first(where: { $0.id == selection }) {
+            return current
+        }
+        guard let ledger = currentHistoryRecord?.useLedger,
+              let index = ledger.papers.indices.first(where: {
+                  ledger.papers[$0].work.id == selection || useWorks[$0].id == selection
+              }) else { return nil }
+        return useWorks[index]
+    }
+
+    var useWorks: [Work] {
+        guard let ledger = currentHistoryRecord?.useLedger else { return [] }
+        let refreshed = aiRankedWorks + works
+        return ledger.papers.map { paper in
+            refreshed.first {
+                paper.identity.matches(PaperIdentity(work: $0))
+            } ?? paper.work
+        }
     }
 
     var filteredWorks: [Work] {
         if decisionFilter == .use {
-            return currentHistoryRecord?.useLedger.papers.map(\.work) ?? []
+            return useWorks
         }
         return works
     }
@@ -867,17 +894,13 @@ final class SearchStore: ObservableObject {
 
     var workTitleLookup: [String: String] {
         var lookup: [String: String] = [:]
-        for work in works { lookup[work.id] = work.title }
-        for work in aiRankedWorks { lookup[work.id] = work.title }
+        for work in aiRankedWorks + works + useWorks { lookup[work.id] = work.title }
         return lookup
     }
 
     var workURLLookup: [String: URL] {
         var lookup: [String: URL] = [:]
-        for work in works where lookup[work.id] == nil {
-            if let url = work.landingPageURL { lookup[work.id] = url }
-        }
-        for work in aiRankedWorks where lookup[work.id] == nil {
+        for work in aiRankedWorks + works + useWorks where lookup[work.id] == nil {
             if let url = work.landingPageURL { lookup[work.id] = url }
         }
         return lookup
@@ -886,14 +909,7 @@ final class SearchStore: ObservableObject {
     /// Generates a field-level summary (reusing the Field Scan generator + work_id validation)
     /// from either the top current results or the papers the user marked Use.
     func generateFieldSummary(scope: FieldSummaryScope) async {
-        let ranked = aiRankedWorks.isEmpty ? works : aiRankedWorks
-        let selected: [Work]
-        switch scope {
-        case .topResults:
-            selected = Array(ranked.prefix(30))
-        case .marked:
-            selected = ranked.filter { scanDecisions[$0.id]?.decision == .use }
-        }
+        let selected = fieldSummarySourceWorks(scope: scope)
         guard !selected.isEmpty else {
             switch scope {
             case .marked:
@@ -937,6 +953,15 @@ final class SearchStore: ObservableObject {
         } catch {
             guard generation == searchGeneration else { return }
             fieldSummaryError = error.localizedDescription
+        }
+    }
+
+    func fieldSummarySourceWorks(scope: FieldSummaryScope) -> [Work] {
+        switch scope {
+        case .topResults:
+            return Array((aiRankedWorks.isEmpty ? works : aiRankedWorks).prefix(30))
+        case .marked:
+            return useWorks
         }
     }
 
@@ -2708,6 +2733,7 @@ final class SearchStore: ObservableObject {
     }
 
     private func evidenceTableSourceWorks() -> [Work] {
+        if decisionFilter == .use { return useWorks }
         let ranked = aiRankedWorks.isEmpty ? works : aiRankedWorks
         var seen = Set<String>()
         return ranked.filter { seen.insert($0.id).inserted }

@@ -66,4 +66,55 @@ import Testing
         ledger.remove(work)
         #expect(!ledger.contains(work))
     }
+
+    @Test func snapshotDecodesMissingAndObsoleteDecisionFiltersAsAll() throws {
+        let snapshot = makeSnapshot(query: "gut", works: [makeWork()])
+        let encoded = try JSONEncoder().encode(snapshot)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+
+        object.removeValue(forKey: "decisionFilter")
+        let missing = try JSONDecoder().decode(
+            SearchHistorySnapshot.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(missing.decisionFilter == .all)
+
+        for obsolete in ["maybe", "exclude", "unreviewed", "future-value"] {
+            object["decisionFilter"] = obsolete
+            let decoded = try JSONDecoder().decode(
+                SearchHistorySnapshot.self,
+                from: JSONSerialization.data(withJSONObject: object)
+            )
+            #expect(decoded.decisionFilter == .all)
+        }
+    }
+
+    @Test func completedAIStageUsesOnlyUnambiguousTerminalStates() {
+        #expect(
+            SearchHistoryAIStage.completed(
+                coarse: .localReady(candidates: 8),
+                evidence: .idle
+            ) == .localCandidates
+        )
+        #expect(
+            SearchHistoryAIStage.completed(
+                coarse: .failed(message: "coarse failed", candidates: 8),
+                evidence: .idle
+            ) == .localCandidates
+        )
+        #expect(
+            SearchHistoryAIStage.completed(
+                coarse: .completed(candidates: 8, retained: 5),
+                evidence: .failed("evidence failed")
+            ) == .coarseRanking
+        )
+        #expect(
+            SearchHistoryAIStage.completed(
+                coarse: .completed(candidates: 8, retained: 5),
+                evidence: .completed(fullText: 2, abstractOnly: 3, retained: 5)
+            ) == .evidenceRanking
+        )
+    }
 }
