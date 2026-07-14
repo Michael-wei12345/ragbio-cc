@@ -66,15 +66,27 @@ struct UseLedger: Codable, Equatable {
 
     mutating func mark(_ work: Work, at date: Date = Date()) {
         let identity = PaperIdentity(work: work)
-        if let index = papers.firstIndex(where: { $0.identity.matches(identity) }) {
-            let mergedKeys = papers[index].identity.keys + identity.keys.filter {
-                !papers[index].identity.keys.contains($0)
+        let matches = papers.indices.filter { papers[$0].identity.matches(identity) }
+        if let first = matches.first {
+            var mergedKeys: [String] = []
+            for index in matches {
+                mergedKeys += papers[index].identity.keys.filter { !mergedKeys.contains($0) }
             }
-            papers[index].identity = PaperIdentity(keys: mergedKeys)
-            papers[index].work = work
+            mergedKeys += identity.keys.filter { !mergedKeys.contains($0) }
+            let selectedAt = matches.map { papers[$0].selectedAt }.min() ?? date
+            for index in matches.dropFirst().reversed() { papers.remove(at: index) }
+            papers[first] = UsedPaper(
+                identity: PaperIdentity(keys: mergedKeys),
+                work: work,
+                selectedAt: selectedAt
+            )
         } else {
             papers.append(UsedPaper(identity: identity, work: work, selectedAt: date))
         }
+    }
+
+    mutating func reconcile(with works: [Work]) {
+        for work in works where contains(work) { mark(work) }
     }
 
     mutating func remove(_ work: Work) {

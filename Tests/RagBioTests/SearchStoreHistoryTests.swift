@@ -129,12 +129,57 @@ import Testing
         let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
         await store.openHistory(record.id)
 
-        store.decisionFilter = .use
+        #expect(store.decisionFilter == .all)
         store.generateEvidenceTable()
 
         #expect(store.currentEvidenceTable?.basedOnWorkIDs == [ledgerOnly.id])
         #expect(store.currentEvidenceTable?.rows.map(\.title) == [ledgerOnly.title])
         #expect(store.fieldSummarySourceWorks(scope: .marked).map(\.id) == [ledgerOnly.id])
+        let table = try #require(store.currentEvidenceTable)
+        #expect(FieldScanService().selectedRows(from: table).map(\.workID) == [ledgerOnly.id])
+    }
+
+    @Test func bridgedUseProjectionIsOneRowAndOldSelectionOpensRefreshedDetail() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let doiOnly = makeWork(
+            id: "doi-only",
+            doi: "10.1000/bridge",
+            pmid: nil,
+            title: "DOI source"
+        )
+        let pmidOnly = makeWork(
+            id: "pmid-only",
+            doi: nil,
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "PMID source"
+        )
+        let bridge = makeWork(
+            id: "bridge",
+            doi: "10.1000/bridge",
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "Refreshed bridge"
+        )
+        var ledger = UseLedger()
+        ledger.mark(doiOnly, at: Date(timeIntervalSince1970: 1))
+        ledger.mark(pmidOnly, at: Date(timeIntervalSince1970: 2))
+        var record = makeRecord(query: "bridge", works: [bridge], date: Date(), useLedger: ledger)
+        record.snapshot.selectedWorkID = pmidOnly.id
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+
+        await store.openHistory(record.id)
+        store.generateEvidenceTable()
+
+        #expect(store.useWorks.map(\.id) == [bridge.id])
+        #expect(store.selectedWork?.id == bridge.id)
+        #expect(store.selectedWork?.title == "Refreshed bridge")
+        #expect(store.currentEvidenceTable?.basedOnWorkIDs == [bridge.id])
+        #expect(Set(store.currentEvidenceTable?.basedOnWorkIDs ?? []).count == 1)
     }
 
     @Test func replacementSearchInvalidatesDelayedFirstStageBeforeItCanPublish() async throws {
@@ -142,7 +187,7 @@ import Testing
         let historyStore = SearchHistoryStore(
             root: root.appendingPathComponent("SearchHistory"),
             legacyRoot: root.appendingPathComponent("SearchSession"),
-            persistenceDelay: .milliseconds(200)
+            persistenceDelay: .seconds(2)
         )
         try await historyStore.bootstrap()
         let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
@@ -278,7 +323,7 @@ import Testing
         let historyStore = SearchHistoryStore(
             root: root.appendingPathComponent("SearchHistory"),
             legacyRoot: root.appendingPathComponent("SearchSession"),
-            persistenceDelay: .milliseconds(200)
+            persistenceDelay: .seconds(2)
         )
         try await historyStore.bootstrap()
         let first = makeRecord(query: "first", works: [makeWork()], date: Date())
@@ -321,7 +366,7 @@ import Testing
         let historyStore = SearchHistoryStore(
             root: root.appendingPathComponent("SearchHistory"),
             legacyRoot: root.appendingPathComponent("SearchSession"),
-            persistenceDelay: .milliseconds(200)
+            persistenceDelay: .seconds(2)
         )
         try await historyStore.bootstrap()
         let saved = makeRecord(query: "saved", works: [makeWork()], date: Date())
@@ -628,7 +673,7 @@ import Testing
         let historyStore = SearchHistoryStore(
             root: root.appendingPathComponent("SearchHistory"),
             legacyRoot: root.appendingPathComponent("SearchSession"),
-            persistenceDelay: .milliseconds(200)
+            persistenceDelay: .seconds(2)
         )
         try await historyStore.bootstrap()
         let record = makeRecord(query: "first", works: [makeWork()], date: Date())
@@ -967,7 +1012,7 @@ import Testing
         let historyStore = SearchHistoryStore(
             root: root.appendingPathComponent("SearchHistory"),
             legacyRoot: root.appendingPathComponent("SearchSession"),
-            persistenceDelay: .milliseconds(200)
+            persistenceDelay: .seconds(2)
         )
         try await historyStore.bootstrap()
         let oldWork = makeWork()
@@ -1006,7 +1051,7 @@ import Testing
         let historyStore = SearchHistoryStore(
             root: historyRoot,
             legacyRoot: root.appendingPathComponent("SearchSession"),
-            persistenceDelay: .milliseconds(200)
+            persistenceDelay: .seconds(2)
         )
         try await historyStore.bootstrap()
         let oldWork = makeWork()
@@ -1053,7 +1098,7 @@ import Testing
         let historyStore = SearchHistoryStore(
             root: root.appendingPathComponent("SearchHistory"),
             legacyRoot: root.appendingPathComponent("SearchSession"),
-            persistenceDelay: .milliseconds(200)
+            persistenceDelay: .seconds(2)
         )
         try await historyStore.bootstrap()
         let first = makeRecord(query: "first", works: [makeWork()], date: Date())

@@ -204,6 +204,8 @@ actor SearchHistoryStore {
             snapshot.revision,
             (prior?.snapshot.revision ?? 0) + 1
         )
+        var useLedger = prior?.useLedger ?? UseLedger()
+        useLedger.reconcile(with: snapshot.rankedWorks + snapshot.allWorks)
         let record = SearchHistoryRecord(
             schemaVersion: SearchHistoryRecord.currentSchemaVersion,
             id: prior?.id ?? UUID(),
@@ -212,7 +214,7 @@ actor SearchHistoryStore {
             createdAt: prior?.createdAt ?? startedAt,
             lastSuccessfulSearchAt: completedAt,
             snapshot: snapshot,
-            useLedger: prior?.useLedger ?? UseLedger()
+            useLedger: useLedger
         )
         let result = (record, try save(record))
         if firstUsableReturnDelay != .zero {
@@ -242,30 +244,42 @@ actor SearchHistoryStore {
 
     func delete(id: UUID) throws -> SearchHistoryIndex {
         var index = try readIndexOrRebuild()
-        let url = recordURL(id)
-        var tombstone: URL?
-        if FileManager.default.fileExists(atPath: url.path) {
-            let destination = records.appendingPathComponent(
-                "\(id.uuidString)-\(UUID().uuidString).deleted"
-            )
-            try FileManager.default.moveItem(at: url, to: destination)
-            tombstone = destination
+        guard let selected = index.summaries.first(where: { $0.id == id }) else { return index }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: records,
+            includingPropertiesForKeys: nil
+        ).filter { url in
+            guard url.pathExtension == "json",
+                  let filenameID = UUID(
+                    uuidString: url.deletingPathExtension().lastPathComponent
+                  ),
+                  let data = try? Data(contentsOf: url),
+                  let record = try? decoder.decode(SearchHistoryRecord.self, from: data),
+                  isValid(record, expectedID: filenameID) else { return false }
+            return record.normalizedQuery == selected.normalizedQuery
         }
-        index.summaries.removeAll { $0.id == id }
-        if index.lastOpenedHistoryID == id {
-            index.lastOpenedHistoryID = nil
-        }
+        var moved: [(source: URL, tombstone: URL)] = []
         do {
+            for url in urls {
+                let tombstone = records.appendingPathComponent(
+                    "\(url.deletingPathExtension().lastPathComponent)-\(UUID().uuidString).deleted"
+                )
+                try FileManager.default.moveItem(at: url, to: tombstone)
+                moved.append((url, tombstone))
+            }
+            index.summaries.removeAll { $0.normalizedQuery == selected.normalizedQuery }
+            if let lastOpened = index.lastOpenedHistoryID,
+               !index.summaries.contains(where: { $0.id == lastOpened }) {
+                index.lastOpenedHistoryID = nil
+            }
             try writeIndex(index)
         } catch {
-            if let tombstone {
-                try FileManager.default.moveItem(at: tombstone, to: url)
+            for move in moved.reversed() {
+                try? FileManager.default.moveItem(at: move.tombstone, to: move.source)
             }
             throw error
         }
-        if let tombstone {
-            try? FileManager.default.removeItem(at: tombstone)
-        }
+        for move in moved { try? FileManager.default.removeItem(at: move.tombstone) }
         return index
     }
 

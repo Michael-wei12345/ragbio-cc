@@ -14,7 +14,7 @@ enum SearchHistorySuggestions {
         }
     }
 
-    static func canSubmit(query: String, isLoading: Bool) -> Bool {
+    static func canSubmit(query: String) -> Bool {
         !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
@@ -203,10 +203,7 @@ struct SearchHistoryField: View {
             Button("检索", action: runSearch)
                 .buttonStyle(.borderedProminent)
                 .disabled(
-                    !SearchHistorySuggestions.canSubmit(
-                        query: store.query,
-                        isLoading: store.isLoading
-                    )
+                    !SearchHistorySuggestions.canSubmit(query: store.query)
                 )
         }
         .padding(3)
@@ -273,10 +270,7 @@ struct SearchHistoryField: View {
     }
 
     private func runSearch() {
-        guard SearchHistorySuggestions.canSubmit(
-            query: store.query,
-            isLoading: store.isLoading
-        ) else { return }
+        guard SearchHistorySuggestions.canSubmit(query: store.query) else { return }
         focused = false
         Task { await store.search() }
     }

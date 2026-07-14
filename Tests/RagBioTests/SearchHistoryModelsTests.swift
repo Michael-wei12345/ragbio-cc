@@ -59,6 +59,47 @@ import Testing
         #expect(ledger.contains(old))
     }
 
+    @Test func bridgingWorkCoalescesEveryMatchingLedgerEntryWithoutRemovingUnrelatedUse() {
+        let doiOnly = makeWork(
+            id: "doi-only",
+            doi: "10.1000/bridge",
+            pmid: nil,
+            title: "DOI metadata"
+        )
+        let pmidOnly = makeWork(
+            id: "pmid-only",
+            doi: nil,
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "PMID metadata"
+        )
+        let unrelated = makeWork(
+            id: "unrelated",
+            doi: "10.1000/unrelated",
+            pmid: nil,
+            title: "Unrelated"
+        )
+        let bridge = makeWork(
+            id: "bridge",
+            doi: "10.1000/bridge",
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "Refreshed bridge"
+        )
+        var ledger = UseLedger()
+        ledger.mark(doiOnly, at: Date(timeIntervalSince1970: 2))
+        ledger.mark(unrelated, at: Date(timeIntervalSince1970: 3))
+        ledger.mark(pmidOnly, at: Date(timeIntervalSince1970: 1))
+
+        ledger.mark(bridge, at: Date(timeIntervalSince1970: 4))
+
+        #expect(ledger.papers.map(\.work.id) == [bridge.id, unrelated.id])
+        #expect(ledger.papers[0].selectedAt == Date(timeIntervalSince1970: 1))
+        #expect(ledger.papers[0].identity.keys.contains("doi:10.1000/bridge"))
+        #expect(ledger.papers[0].identity.keys.contains("pmid:987"))
+        #expect(ledger.contains(doiOnly))
+        #expect(ledger.contains(pmidOnly))
+        #expect(ledger.contains(unrelated))
+    }
+
     @Test func onlyExplicitRemovalClearsUse() {
         let work = makeWork()
         var ledger = UseLedger()

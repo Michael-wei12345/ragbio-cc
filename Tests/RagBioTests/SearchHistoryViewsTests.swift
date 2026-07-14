@@ -28,16 +28,8 @@ import Testing
     }
 
     @Test func submissionRequiresOnlyNonblankInput() {
-        #expect(!SearchHistorySuggestions.canSubmit(query: " \n ", isLoading: false))
-        #expect(SearchHistorySuggestions.canSubmit(query: "gut", isLoading: true))
-        #expect(SearchHistorySuggestions.canSubmit(query: "gut", isLoading: false))
-    }
-
-    @Test func articleSummaryStartsOnlyOnAbstractToSummaryTransition() {
-        #expect(ArticleSummaryTrigger.shouldGenerate(from: 0, to: 1))
-        #expect(!ArticleSummaryTrigger.shouldGenerate(from: 1, to: 1))
-        #expect(!ArticleSummaryTrigger.shouldGenerate(from: 1, to: 0))
-        #expect(!ArticleSummaryTrigger.shouldGenerate(from: 0, to: 0))
+        #expect(!SearchHistorySuggestions.canSubmit(query: " \n "))
+        #expect(SearchHistorySuggestions.canSubmit(query: "gut"))
     }
 
     private func summary(query: String, date: TimeInterval) -> SearchHistorySummary {

@@ -44,7 +44,7 @@ struct FieldScanService {
         )
     }
 
-    private func selectedRows(from table: EvidenceTable) -> [EvidenceTableRow] {
+    func selectedRows(from table: EvidenceTable) -> [EvidenceTableRow] {
         let marked = table.rows.filter {
             $0.scanDecision == .use || $0.scanDecision == .maybe
         }

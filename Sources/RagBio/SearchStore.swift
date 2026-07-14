@@ -634,20 +634,29 @@ final class SearchStore: ObservableObject {
             return current
         }
         guard let ledger = currentHistoryRecord?.useLedger,
-              let index = ledger.papers.indices.first(where: {
-                  ledger.papers[$0].work.id == selection || useWorks[$0].id == selection
+              let selectedPaper = ledger.papers.first(where: {
+                  $0.work.id == selection
               }) else { return nil }
-        return useWorks[index]
+        return useWorks.first {
+            selectedPaper.identity.matches(PaperIdentity(work: $0))
+        }
     }
 
     var useWorks: [Work] {
         guard let ledger = currentHistoryRecord?.useLedger else { return [] }
         let refreshed = aiRankedWorks + works
-        return ledger.papers.map { paper in
-            refreshed.first {
+        var projected: [Work] = []
+        for paper in ledger.papers {
+            let work = refreshed.first {
                 paper.identity.matches(PaperIdentity(work: $0))
             } ?? paper.work
+            let identity = PaperIdentity(work: work)
+            guard !projected.contains(where: {
+                $0.id == work.id || PaperIdentity(work: $0).matches(identity)
+            }) else { continue }
+            projected.append(work)
         }
+        return projected
     }
 
     var filteredWorks: [Work] {
@@ -2733,7 +2742,7 @@ final class SearchStore: ObservableObject {
     }
 
     private func evidenceTableSourceWorks() -> [Work] {
-        if decisionFilter == .use { return useWorks }
+        if hasMarkedUseWorks { return useWorks }
         let ranked = aiRankedWorks.isEmpty ? works : aiRankedWorks
         var seen = Set<String>()
         return ranked.filter { seen.insert($0.id).inserted }

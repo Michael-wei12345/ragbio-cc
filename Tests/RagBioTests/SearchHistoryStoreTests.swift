@@ -158,6 +158,142 @@ import Testing
         #expect(rebuilt.summaries.map(\.normalizedQuery) == ["duplicate", "unique"])
     }
 
+    @Test func deletingRebuiltQueryRemovesEveryValidShadowSoItCannotResurrect() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let records = root.appendingPathComponent("records")
+        try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+        let oldWork = makeWork(id: "old", doi: "10.1000/old")
+        let newWork = makeWork(id: "new", doi: "10.1000/new")
+        var oldLedger = UseLedger(); oldLedger.mark(oldWork)
+        var newLedger = UseLedger(); newLedger.mark(newWork)
+        let older = makeRecord(
+            query: "duplicate",
+            works: [oldWork],
+            date: Date(timeIntervalSince1970: 1),
+            useLedger: oldLedger
+        )
+        let newer = makeRecord(
+            query: " DUPLICATE ",
+            works: [newWork],
+            date: Date(timeIntervalSince1970: 3),
+            useLedger: newLedger
+        )
+        let unrelated = makeRecord(
+            query: "unrelated",
+            works: [makeWork(id: "other", doi: "10.1000/other")],
+            date: Date(timeIntervalSince1970: 2)
+        )
+        let encoder = JSONEncoder()
+        for record in [older, newer, unrelated] {
+            try encoder.encode(record).write(
+                to: records.appendingPathComponent("\(record.id.uuidString).json")
+            )
+        }
+        let corruptURL = records.appendingPathComponent("corrupt.json")
+        try Data("corrupt".utf8).write(to: corruptURL)
+        try Data("broken".utf8).write(to: root.appendingPathComponent("index.json"))
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        #expect(try await store.loadIndex().summaries.map(\.id) == [newer.id, unrelated.id])
+
+        _ = try await store.delete(id: newer.id)
+        try Data("broken again".utf8).write(to: root.appendingPathComponent("index.json"))
+        let rebuilt = try await store.loadIndex()
+
+        #expect(rebuilt.summaries.map(\.id) == [unrelated.id])
+        #expect(!rebuilt.summaries.contains { $0.normalizedQuery == "duplicate" })
+        #expect(!FileManager.default.fileExists(atPath: records.appendingPathComponent("\(older.id.uuidString).json").path))
+        #expect(!FileManager.default.fileExists(atPath: records.appendingPathComponent("\(newer.id.uuidString).json").path))
+        #expect(FileManager.default.fileExists(atPath: corruptURL.path))
+        #expect(try await store.loadRecord(id: unrelated.id) == unrelated)
+    }
+
+    @Test func failedQueryWideDeleteRollsBackEveryMovedShadow() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let records = root.appendingPathComponent("records")
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        try await store.bootstrap()
+        let visible = makeRecord(query: "duplicate", works: [], date: Date(timeIntervalSince1970: 2))
+        let shadow = makeRecord(query: " DUPLICATE ", works: [], date: Date(timeIntervalSince1970: 1))
+        _ = try await store.save(visible)
+        try JSONEncoder().encode(shadow).write(
+            to: records.appendingPathComponent("\(shadow.id.uuidString).json")
+        )
+        let corruptURL = records.appendingPathComponent("corrupt.json")
+        try Data("corrupt".utf8).write(to: corruptURL)
+        try setPermissions(0o500, at: root)
+
+        var didThrow = false
+        do {
+            _ = try await store.delete(id: visible.id)
+        } catch {
+            didThrow = true
+        }
+        try setPermissions(0o700, at: root)
+
+        #expect(didThrow)
+        #expect(try await store.loadIndex().summaries.map(\.id) == [visible.id])
+        #expect(FileManager.default.fileExists(atPath: records.appendingPathComponent("\(visible.id.uuidString).json").path))
+        #expect(FileManager.default.fileExists(atPath: records.appendingPathComponent("\(shadow.id.uuidString).json").path))
+        #expect(FileManager.default.fileExists(atPath: corruptURL.path))
+    }
+
+    @Test func firstUsableStageReconcilesBridgedUseForPersistenceCountAndExport() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        try await store.bootstrap()
+        let doiOnly = makeWork(
+            id: "doi-only",
+            doi: "10.1000/bridge",
+            pmid: nil,
+            title: "DOI source"
+        )
+        let pmidOnly = makeWork(
+            id: "pmid-only",
+            doi: nil,
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "PMID source"
+        )
+        let bridge = makeWork(
+            id: "bridge",
+            doi: "10.1000/bridge",
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "Refreshed bridge"
+        )
+        var ledger = UseLedger()
+        ledger.mark(doiOnly, at: Date(timeIntervalSince1970: 1))
+        ledger.mark(pmidOnly, at: Date(timeIntervalSince1970: 2))
+        let prior = makeRecord(query: "bridge", works: [doiOnly], date: Date(), useLedger: ledger)
+        _ = try await store.save(prior)
+        let snapshot = makeSnapshot(query: "bridge", works: [bridge])
+
+        let result = try await store.saveFirstUsableStage(
+            displayQuery: "bridge",
+            normalizedQuery: "bridge",
+            startedAt: Date(),
+            completedAt: Date().addingTimeInterval(1),
+            snapshot: snapshot,
+            mutationToken: SearchHistoryMutationToken()
+        )
+
+        #expect(result.record.useLedger.papers.count == 1)
+        #expect(result.record.useLedger.papers.first?.work.id == bridge.id)
+        #expect(result.index.summaries.first?.useCount == 1)
+        let disk = try await store.loadRecord(id: prior.id)
+        #expect(disk.useLedger.papers.count == 1)
+        let export = SearchHistoryExportBuilder.make(records: [disk])
+        #expect(export.urlCount == 1)
+        #expect(export.text.components(separatedBy: "https://doi.org/10.1000/bridge").count - 1 == 1)
+    }
+
     @Test func largeValidIndexLoadsNewestFirstWithoutDecodingDamagedRecord() async throws {
         let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
         let legacyRoot = root.deletingLastPathComponent().appendingPathComponent("SearchSession")

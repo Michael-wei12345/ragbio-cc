@@ -18,10 +18,7 @@ struct RagBioApp: App {
                 }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(
-                    !SearchHistorySuggestions.canSubmit(
-                        query: store.query,
-                        isLoading: store.isLoading
-                    )
+                    !SearchHistorySuggestions.canSubmit(query: store.query)
                 )
             }
         }
