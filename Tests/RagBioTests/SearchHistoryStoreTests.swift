@@ -246,6 +246,7 @@ import Testing
     @Test func failedIndividualRollbackLeavesRecoverableMarkerThatBootstrapRestores() async throws {
         let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
         let records = root.appendingPathComponent("records")
+        let recovery = root.appendingPathComponent("recovery")
         let visible = makeRecord(query: "duplicate", works: [], date: Date(timeIntervalSince1970: 2))
         let shadow = makeRecord(query: " DUPLICATE ", works: [], date: Date(timeIntervalSince1970: 1))
         let store = SearchHistoryStore(
@@ -271,13 +272,17 @@ import Testing
         try setPermissions(0o700, at: root)
 
         let rollbackURLs = try FileManager.default.contentsOfDirectory(
-            at: records,
+            at: recovery,
             includingPropertiesForKeys: nil
         ).filter { $0.pathExtension == "rollback" }
         #expect(message.contains("rollback"))
         #expect(message.contains(shadow.id.uuidString))
         #expect(rollbackURLs.count == 1)
         #expect(rollbackURLs.first?.lastPathComponent.contains(shadow.id.uuidString) == true)
+        #expect(try FileManager.default.contentsOfDirectory(
+            at: records,
+            includingPropertiesForKeys: nil
+        ).allSatisfy { $0.pathExtension != "rollback" })
         #expect(!FileManager.default.fileExists(
             atPath: records.appendingPathComponent("\(shadow.id.uuidString).json").path
         ))
@@ -296,7 +301,7 @@ import Testing
         #expect(try await restarted.loadIndex().summaries.map(\.id) == [visible.id])
         #expect(try await restarted.loadRecord(id: shadow.id) == shadow)
         #expect(try FileManager.default.contentsOfDirectory(
-            at: records,
+            at: recovery,
             includingPropertiesForKeys: nil
         ).allSatisfy { $0.pathExtension != "rollback" })
         #expect(FileManager.default.fileExists(atPath: corruptURL.path))
@@ -385,6 +390,29 @@ import Testing
         #expect(index.summaries.last?.displayQuery == "query 0")
         let newest = try #require(index.summaries.first)
         #expect(try await reader.loadRecord(id: newest.id).snapshot.rankedWorks.count == 1)
+    }
+
+    @Test func validIndexBootstrapDoesNotEnumerateRecordDirectory() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let records = root.appendingPathComponent("records")
+        let legacyRoot = root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        let writer = SearchHistoryStore(root: root, legacyRoot: legacyRoot)
+        try await writer.bootstrap()
+        let record = makeRecord(query: "indexed", works: [makeWork()], date: Date())
+        _ = try await writer.save(record)
+        for offset in 0..<200 {
+            try Data("junk".utf8).write(
+                to: records.appendingPathComponent("unrelated-\(offset).deleted")
+            )
+        }
+        try setPermissions(0o300, at: records)
+        defer { try? setPermissions(0o700, at: records) }
+        let reader = SearchHistoryStore(root: root, legacyRoot: legacyRoot)
+
+        try await reader.bootstrap()
+        let index = try await reader.loadIndex()
+
+        #expect(index.summaries.map(\.id) == [record.id])
     }
 
     @Test func useMutationIsSerializedAndPersistsMissingPaper() async throws {

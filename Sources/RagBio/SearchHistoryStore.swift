@@ -40,6 +40,7 @@ final class SearchHistoryMutationToken: @unchecked Sendable {
 actor SearchHistoryStore {
     private let root: URL
     private let records: URL
+    private let recovery: URL
     private let indexURL: URL
     private let legacyResetMarkerURL: URL
     private let legacyRoot: URL
@@ -72,6 +73,7 @@ actor SearchHistoryStore {
         ).first!.appendingPathComponent("RagBio", isDirectory: true)
         root = customRoot ?? applicationRoot.appendingPathComponent("SearchHistory", isDirectory: true)
         records = root.appendingPathComponent("records", isDirectory: true)
+        recovery = root.appendingPathComponent("recovery", isDirectory: true)
         indexURL = root.appendingPathComponent("index.json")
         legacyResetMarkerURL = root.appendingPathComponent(".legacy-reset-v1")
         legacyRoot = customLegacyRoot ?? applicationRoot.appendingPathComponent("SearchSession", isDirectory: true)
@@ -86,6 +88,7 @@ actor SearchHistoryStore {
 
     func bootstrap() throws {
         try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
         try recoverRollbackTombstones()
         var index = try readIndexOrRebuild()
         if FileManager.default.fileExists(atPath: legacyResetMarkerURL.path) {
@@ -298,8 +301,9 @@ actor SearchHistoryStore {
                     try FileManager.default.moveItem(at: move.tombstone, to: move.source)
                 } catch {
                     let restoreError = error
-                    let marker = move.tombstone.deletingPathExtension()
-                        .appendingPathExtension("rollback")
+                    let marker = recovery.appendingPathComponent(
+                        "\(move.source.deletingPathExtension().lastPathComponent)-\(UUID().uuidString).rollback"
+                    )
                     do {
                         try FileManager.default.moveItem(at: move.tombstone, to: marker)
                         rollbackFailures.append(
@@ -335,7 +339,7 @@ actor SearchHistoryStore {
 
     private func recoverRollbackTombstones() throws {
         let markers = try FileManager.default.contentsOfDirectory(
-            at: records,
+            at: recovery,
             includingPropertiesForKeys: nil
         ).filter { $0.pathExtension == "rollback" }.sorted { $0.path < $1.path }
         var failures: [String] = []
