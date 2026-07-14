@@ -122,6 +122,13 @@ import Testing
         )
         #expect(missing.decisionFilter == .all)
 
+        object["decisionFilter"] = "candidate"
+        let candidate = try JSONDecoder().decode(
+            SearchHistorySnapshot.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(candidate.decisionFilter == .candidate)
+
         for obsolete in ["maybe", "exclude", "unreviewed", "future-value"] {
             object["decisionFilter"] = obsolete
             let decoded = try JSONDecoder().decode(
@@ -130,6 +137,22 @@ import Testing
             )
             #expect(decoded.decisionFilter == .all)
         }
+    }
+
+    @Test func onlyDefiniteNonPrimaryPublicationTypesAreFiltered() {
+        #expect(makeWork(type: "review").nonPrimaryPublicationKind == .review)
+        #expect(
+            makeWork(
+                publicationTypes: ["Journal Article", "Meta-Analysis"]
+            ).nonPrimaryPublicationKind == .metaAnalysis
+        )
+        #expect(
+            makeWork(
+                publicationTypes: ["Review", "Randomized Controlled Trial"]
+            ).nonPrimaryPublicationKind == nil
+        )
+        #expect(makeWork(type: nil).nonPrimaryPublicationKind == nil)
+        #expect(makeWork(isRetracted: true).nonPrimaryPublicationKind == .retracted)
     }
 
     @Test func completedAIStageUsesOnlyUnambiguousTerminalStates() {

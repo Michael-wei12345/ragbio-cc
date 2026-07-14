@@ -36,6 +36,7 @@ struct ScanDecisionRecord: Codable, Equatable {
 
 enum ScanDecisionFilter: String, Codable, CaseIterable, Identifiable {
     case all
+    case candidate
     case use
     case maybe
     case exclude
@@ -46,6 +47,7 @@ enum ScanDecisionFilter: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all: return "All"
+        case .candidate: return "Candidate"
         case .use: return "Use"
         case .maybe: return "Maybe"
         case .exclude: return "Exclude"

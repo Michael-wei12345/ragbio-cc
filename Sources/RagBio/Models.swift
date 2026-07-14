@@ -27,11 +27,12 @@ struct Work: Codable, Identifiable, Hashable {
     let locations: [Location]
     let isRetracted: Bool?
     let type: String?
+    var publicationTypes: [String]? = nil
     let language: String?
     let abstractPlain: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, doi, title, authorships, ids, locations, type, language
+        case id, doi, title, authorships, ids, locations, type, publicationTypes, language
         case publicationDate = "publication_date"
         case publicationYear = "publication_year"
         case citedByCount = "cited_by_count"
@@ -132,6 +133,71 @@ struct Work: Codable, Identifiable, Hashable {
         ids?.pmcid?
             .replacingOccurrences(of: "https://www.ncbi.nlm.nih.gov/pmc/articles/", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/ "))
+    }
+
+    var nonPrimaryPublicationKind: NonPrimaryPublicationKind? {
+        if isRetracted == true { return .retracted }
+
+        let values = Set(([type] + (publicationTypes ?? []).map(Optional.some))
+            .compactMap { $0 }
+            .map(Self.normalizedPublicationType))
+
+        let primaryTypes: Set<String> = [
+            "adaptive clinical trial", "case reports", "clinical study", "clinical trial",
+            "clinical trial phase i", "clinical trial phase ii", "clinical trial phase iii",
+            "clinical trial phase iv", "comparative study", "controlled clinical trial",
+            "evaluation study", "multicenter study", "observational study",
+            "randomized controlled trial", "validation study"
+        ]
+        if !values.isDisjoint(with: primaryTypes) { return nil }
+
+        if values.contains("meta analysis") { return .metaAnalysis }
+        if values.contains("systematic review") || values.contains("review") { return .review }
+        if values.contains("guideline") || values.contains("practice guideline") {
+            return .guideline
+        }
+        if values.contains("consensus statement") { return .consensus }
+        if values.contains("clinical trial protocol") || values.contains("protocol") {
+            return .studyProtocol
+        }
+        if values.contains("editorial") { return .editorial }
+        if values.contains("comment") { return .comment }
+        if values.contains("letter") { return .letter }
+        return nil
+    }
+
+    private static func normalizedPublicationType(_ value: String) -> String {
+        value.lowercased()
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum NonPrimaryPublicationKind: String, Hashable {
+    case review
+    case metaAnalysis
+    case guideline
+    case consensus
+    case editorial
+    case comment
+    case letter
+    case studyProtocol
+    case retracted
+
+    var label: String {
+        switch self {
+        case .review: return "Review"
+        case .metaAnalysis: return "Meta-analysis"
+        case .guideline: return "Guideline"
+        case .consensus: return "Consensus"
+        case .editorial: return "Editorial"
+        case .comment: return "Comment"
+        case .letter: return "Letter"
+        case .studyProtocol: return "Protocol"
+        case .retracted: return "Retracted"
+        }
     }
 }
 

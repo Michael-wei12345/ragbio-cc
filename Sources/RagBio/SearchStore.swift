@@ -679,10 +679,14 @@ final class SearchStore: ObservableObject {
     }
 
     var filteredWorks: [Work] {
-        if decisionFilter == .use {
+        switch decisionFilter {
+        case .candidate:
+            return works.filter { $0.nonPrimaryPublicationKind == nil }
+        case .use:
             return useWorks
+        default:
+            return works
         }
-        return works
     }
 
     var evidenceTableMarkdown: String? {

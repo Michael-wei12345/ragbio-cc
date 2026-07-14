@@ -419,7 +419,7 @@ private struct ScanDecisionFilterBar: View {
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
             Picker("Scan decision filter", selection: $store.decisionFilter) {
-                ForEach([ScanDecisionFilter.all, .use]) { filter in
+                ForEach([ScanDecisionFilter.all, .candidate, .use]) { filter in
                     Text(filter.title).tag(filter)
                 }
             }
@@ -448,11 +448,21 @@ private struct WorkRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            ScanDecisionControl(
-                decision: decision,
-                compact: true,
-                onDecision: onDecision
-            )
+            HStack(spacing: 6) {
+                ScanDecisionControl(
+                    decision: decision,
+                    compact: true,
+                    onDecision: onDecision
+                )
+                if let kind = work.nonPrimaryPublicationKind {
+                    Text(kind.label)
+                        .font(.caption2.bold())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.secondary.opacity(0.12), in: Capsule())
+                }
+            }
 
             Text(translatedTitle ?? work.title)
                 .font(.headline)

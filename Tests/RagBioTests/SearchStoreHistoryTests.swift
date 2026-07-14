@@ -6,6 +6,30 @@ import Testing
 
 @MainActor
 @Suite struct SearchStoreHistoryTests {
+    @Test func candidateFilterHidesOnlyDefiniteNonPrimaryWorks() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        let primary = makeWork(id: "primary", title: "Primary study")
+        let review = makeWork(id: "review", title: "Review", type: "review")
+        let unknown = makeWork(id: "unknown", title: "Unknown", type: nil)
+        let record = makeRecord(
+            query: "filter",
+            works: [primary, review, unknown],
+            date: Date()
+        )
+        try await historyStore.bootstrap()
+        _ = try await historyStore.save(record)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        store.restoreHistoryRecord(record)
+
+        store.decisionFilter = .candidate
+
+        #expect(store.filteredWorks.map(\.id) == [primary.id, unknown.id])
+    }
+
     @Test func mountingRestoredSelectionDoesNotStartNetworkOrSummaryWork() async throws {
         let root = try makeTemporaryDirectory()
         let historyRoot = root.appendingPathComponent("SearchHistory")

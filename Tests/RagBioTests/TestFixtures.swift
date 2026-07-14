@@ -16,7 +16,10 @@ func makeWork(
     year: Int? = 2024,
     author: String? = "A. Author",
     publisherURL: String? = "https://publisher.example/article",
-    bestPublisherURL: String? = nil
+    bestPublisherURL: String? = nil,
+    type: String? = "article",
+    publicationTypes: [String]? = nil,
+    isRetracted: Bool = false
 ) -> Work {
     Work(
         id: id,
@@ -52,8 +55,9 @@ func makeWork(
         hasFullText: false,
         ids: WorkIDs(pmid: pmid, pmcid: nil),
         locations: [],
-        isRetracted: false,
-        type: "article",
+        isRetracted: isRetracted,
+        type: type,
+        publicationTypes: publicationTypes,
         language: "en",
         abstractPlain: "Fixture abstract"
     )

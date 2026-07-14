@@ -178,6 +178,7 @@ struct PubMedClient {
             locations: [primary],
             isRetracted: article.isRetracted ? true : nil,
             type: nil,
+            publicationTypes: article.publicationTypes.isEmpty ? nil : article.publicationTypes,
             language: article.language,
             abstractPlain: abstract
         )
@@ -202,6 +203,7 @@ private struct PubMedArticle {
     var doi: String?
     var pmcid: String?
     var language: String?
+    var publicationTypes: [String] = []
     var isRetracted = false
 }
 
@@ -317,6 +319,9 @@ private final class PubMedEFetchParser: NSObject, XMLParserDelegate {
         case "Language":
             if current?.language == nil, !text.isEmpty { current?.language = text }
         case "PublicationType":
+            if !text.isEmpty, current?.publicationTypes.contains(text) == false {
+                current?.publicationTypes.append(text)
+            }
             if text.caseInsensitiveCompare("Retracted Publication") == .orderedSame {
                 current?.isRetracted = true
             }

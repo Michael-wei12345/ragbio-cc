@@ -216,9 +216,10 @@ extension SearchHistorySnapshot: Decodable {
             FieldScanReport.self,
             forKey: .currentFieldScanReport
         )
-        decisionFilter = try values.decodeIfPresent(String.self, forKey: .decisionFilter) == "use"
-            ? .use
-            : .all
+        let savedFilter = try values.decodeIfPresent(String.self, forKey: .decisionFilter)
+        decisionFilter = savedFilter.flatMap(ScanDecisionFilter.init(rawValue:))
+            .flatMap { [.all, .candidate, .use].contains($0) ? $0 : nil }
+            ?? .all
         completedAIStage = try values.decodeIfPresent(
             SearchHistoryAIStage.self,
             forKey: .completedAIStage
