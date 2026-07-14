@@ -1627,10 +1627,11 @@ private struct ArticleSummaryView: View {
 
     @ViewBuilder
     private func lineView(_ line: String) -> some View {
-        if line.isEmpty {
+        let displayLine = SourceLocatorFormatter.english(line)
+        if displayLine.isEmpty {
             Color.clear.frame(height: 3)
-        } else if line.lowercased().hasPrefix("screening verdict") {
-            Text(line)
+        } else if displayLine.lowercased().hasPrefix("screening verdict") {
+            Text(displayLine)
                 .font(.callout.bold())
                 .foregroundStyle(.tint)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1639,18 +1640,18 @@ private struct ArticleSummaryView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                 .padding(.bottom, 4)
-        } else if line.range(of: #"^\d+\.\s"#, options: .regularExpression) != nil {
-            Text(line)
+        } else if displayLine.range(of: #"^\d+\.\s"#, options: .regularExpression) != nil {
+            Text(displayLine)
                 .font(.callout.bold())
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 4)
-        } else if line.hasPrefix("-") {
-            Text(line)
+        } else if displayLine.hasPrefix("-") {
+            Text(displayLine)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 12)
         } else {
-            Text(line)
+            Text(displayLine)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
         }

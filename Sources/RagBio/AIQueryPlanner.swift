@@ -334,7 +334,7 @@ struct AIQueryPlanner {
         Produce a systematic-review-oriented extraction note, strictly grounded ONLY in the supplied \
         full-text excerpts. Do not speculate and do not use outside knowledge. For each key \
         conclusion, cite the source section/paragraph — each excerpt is prefixed with a locator such \
-        as "[Methods · 第 9 段]". If something is not reported in the excerpts, write "Not reported". \
+        as "[Methods · Paragraph 9]". If something is not reported in the excerpts, write "Not reported". \
         Write in English. Do not use curly braces anywhere inside the note text.
 
         Begin the note with ONE prominent line, exactly in this form:

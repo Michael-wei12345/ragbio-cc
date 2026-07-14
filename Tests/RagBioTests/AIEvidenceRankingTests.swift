@@ -3,6 +3,22 @@ import Testing
 @testable import RagBio
 
 @Suite struct AIEvidenceRankingTests {
+    @Test func sourceLocatorsStayEnglishForNewAndCachedSummaries() {
+        let paragraph = FullTextParagraph(
+            id: "p1",
+            section: "PDF 正文",
+            text: "Full text evidence",
+            ordinal: 3,
+            page: 8
+        )
+
+        #expect(paragraph.locator == "PDF full text · Paragraph 3 · Page 8")
+        #expect(
+            SourceLocatorFormatter.english("[PDF 正文 · 第 1 段; 第 2 段]")
+                == "[PDF full text · Paragraph 1; Paragraph 2]"
+        )
+    }
+
     @Test func evidenceRankingSendsRetrievedPassagesToTheModel() async throws {
         EvidenceRankingURLProtocol.reset()
         let sessionConfiguration = URLSessionConfiguration.ephemeral
@@ -103,6 +119,30 @@ import Testing
         #expect(Array(ranked[0..<20]).map(\.id) == Array(works[0..<20]).map(\.id))
         #expect(Array(ranked[20..<40]).map(\.id) == replacement.map(\.id))
         #expect(Array(ranked[40..<45]).map(\.id) == Array(works[40..<45]).map(\.id))
+    }
+
+    @Test func completedFineRankingPagesAreReused() {
+        let works = (1...40).map { makeWork(id: "W\($0)", doi: "10.1000/\($0)") }
+        let completedFirstPage = Dictionary(
+            uniqueKeysWithValues: works[0..<20].map { ($0.id, "AI 全文精排") }
+        )
+
+        #expect(
+            SearchStore.pageHasCompletedFineRanking(
+                works: works,
+                evidenceLevels: completedFirstPage,
+                page: 1,
+                pageSize: 20
+            )
+        )
+        #expect(
+            !SearchStore.pageHasCompletedFineRanking(
+                works: works,
+                evidenceLevels: completedFirstPage,
+                page: 2,
+                pageSize: 20
+            )
+        )
     }
 
     @MainActor

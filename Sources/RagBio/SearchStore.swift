@@ -1722,10 +1722,13 @@ final class SearchStore: ObservableObject {
             return
         }
         guard !aiRankedWorks.isEmpty else { return }
+        let hasCachedFineRanking = pageHasCompletedFineRanking(page)
         aiEnhancementTask?.cancel()
-        await showAIPage(page)
+        // A completed page already has its evidence order and full-text results.
+        // Do not restart page analysis (which re-reads every full text) just to return to it.
+        await showAIPage(page, analyze: !hasCachedFineRanking)
         restoreFineRankingState(for: page)
-        guard !pageHasCompletedFineRanking(page) else { return }
+        guard !hasCachedFineRanking else { return }
         let generation = searchGeneration
         let originalRequest = currentHistoryRecord?.displayQuery ?? query
         let retrievalQuery = lastQuery
@@ -1765,11 +1768,25 @@ final class SearchStore: ObservableObject {
     }
 
     private func pageHasCompletedFineRanking(_ page: Int) -> Bool {
+        Self.pageHasCompletedFineRanking(
+            works: aiRankedWorks,
+            evidenceLevels: aiEvidenceLevels,
+            page: page,
+            pageSize: pageSize
+        )
+    }
+
+    nonisolated static func pageHasCompletedFineRanking(
+        works: [Work],
+        evidenceLevels: [String: String],
+        page: Int,
+        pageSize: Int
+    ) -> Bool {
         let start = (page - 1) * pageSize
-        guard page > 0, start < aiRankedWorks.count else { return false }
-        let end = min(start + pageSize, aiRankedWorks.count)
-        return aiRankedWorks[start..<end].allSatisfy { work in
-            guard let level = aiEvidenceLevels[work.id] else { return false }
+        guard page > 0, pageSize > 0, start < works.count else { return false }
+        let end = min(start + pageSize, works.count)
+        return works[start..<end].allSatisfy { work in
+            guard let level = evidenceLevels[work.id] else { return false }
             return level.hasPrefix("AI 全文精排")
                 || level.hasPrefix("AI 摘要精排")
                 || level.hasPrefix("本地全文排序")
@@ -2725,8 +2742,11 @@ final class SearchStore: ObservableObject {
     }
 
     private func sourceOrdinal(from locator: String) -> Int? {
-        let pattern = #"第\s*(\d+)\s*段"#
-        guard let range = locator.range(of: pattern, options: .regularExpression) else {
+        let pattern = #"(?:第\s*(\d+)\s*段|paragraph\s*(\d+))"#
+        guard let range = locator.range(
+            of: pattern,
+            options: [.regularExpression, .caseInsensitive]
+        ) else {
             return nil
         }
         let match = String(locator[range])
@@ -2734,8 +2754,11 @@ final class SearchStore: ObservableObject {
     }
 
     private func sourcePage(from locator: String) -> Int? {
-        let pattern = #"第\s*(\d+)\s*页"#
-        guard let range = locator.range(of: pattern, options: .regularExpression) else {
+        let pattern = #"(?:第\s*(\d+)\s*页|page\s*(\d+))"#
+        guard let range = locator.range(
+            of: pattern,
+            options: [.regularExpression, .caseInsensitive]
+        ) else {
             return nil
         }
         let match = String(locator[range])

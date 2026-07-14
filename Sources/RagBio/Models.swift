@@ -244,11 +244,39 @@ struct FullTextParagraph: Identifiable, Codable, Hashable {
     let page: Int?
 
     var locator: String {
-        var parts = [section, "第 \(ordinal) 段"]
+        var parts = [SourceLocatorFormatter.englishSection(section), "Paragraph \(ordinal)"]
         if let page {
-            parts.append("第 \(page) 页")
+            parts.append("Page \(page)")
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+enum SourceLocatorFormatter {
+    static func englishSection(_ section: String) -> String {
+        switch section {
+        case "PDF 正文": return "PDF full text"
+        case "正文": return "Full text"
+        case "摘要": return "Abstract"
+        default: return section
+        }
+    }
+
+    static func english(_ text: String) -> String {
+        var value = text
+            .replacingOccurrences(of: "PDF 正文", with: "PDF full text")
+            .replacingOccurrences(of: "正文", with: "Full text")
+            .replacingOccurrences(of: "摘要", with: "Abstract")
+        value = value.replacingOccurrences(
+            of: #"第\s*(\d+)\s*段"#,
+            with: "Paragraph $1",
+            options: .regularExpression
+        )
+        return value.replacingOccurrences(
+            of: #"第\s*(\d+)\s*页"#,
+            with: "Page $1",
+            options: .regularExpression
+        )
     }
 }
 
