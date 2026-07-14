@@ -266,6 +266,11 @@ struct AIEvidenceRankingInput {
     }
 }
 
+struct AIAbstractRankingInput {
+    let work: Work
+    let abstract: String?
+}
+
 enum AIRerankState: Equatable {
     case idle
     case fetchingCandidates

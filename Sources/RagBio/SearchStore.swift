@@ -90,8 +90,16 @@ final class SearchStore: ObservableObject {
     private var useMutationTask: Task<Void, Never>?
     private var isRestoringHistory = false
     let pageSize = 20
-    private let aiCandidateLimit = 50
-    private let aiCandidatePageSize = 50
+    private let aiCandidateLimit = 60
+    private let aiCandidatePageSize = 60
+    private let aiAbstractRankingBatchSize = 20
+    private typealias AbstractRankResult = (
+        work: Work,
+        score: Int,
+        relevant: Bool,
+        reason: String,
+        order: Int
+    )
     private typealias EvidenceRankResult = (
         work: Work,
         score: Int,
@@ -1116,15 +1124,18 @@ final class SearchStore: ObservableObject {
             lastQuery = plan.searchQuery
             totalCount = candidates.count
             currentPage = 1
-            isLoading = false
-            applyLocalFastRanking(
+            aiRerankState = .ranking(completed: 0, total: candidates.count)
+            let abstractRankingSeconds = try await rankAllCandidateAbstracts(
                 candidates,
                 originalRequest: displayQuery,
-                retrievalQuery: plan.searchQuery
+                configuration: configuration,
+                generation: generation
             )
+            try ensureSearchIsActive(generation)
             totalCount = aiRankedWorks.count
+            isLoading = false
             await showAIPage(1, analyze: false, persistStage: false)
-            searchTimingSummary = "首屏 \(elapsedSeconds(since: searchStartedAt)) 秒 · AI 理解 \(planningSeconds) 秒 · OpenAlex \(candidateSeconds) 秒 · 临时候选"
+            searchTimingSummary = "首屏 \(elapsedSeconds(since: searchStartedAt)) 秒 · AI 理解 \(planningSeconds) 秒 · OpenAlex \(candidateSeconds) 秒 · 摘要排序 \(abstractRankingSeconds) 秒"
             await commitFirstUsableHistoryStage(
                 displayQuery: displayQuery,
                 startedAt: searchStartedAt,
@@ -1140,7 +1151,8 @@ final class SearchStore: ObservableObject {
                     originalRequest: displayQuery,
                     retrievalQuery: plan.searchQuery,
                     configuration: configuration,
-                    searchStartedAt: searchStartedAt
+                    searchStartedAt: searchStartedAt,
+                    abstractRankingSeconds: abstractRankingSeconds
                 )
             }
         } catch is CancellationError {
@@ -1166,7 +1178,8 @@ final class SearchStore: ObservableObject {
         originalRequest: String,
         retrievalQuery: String,
         configuration: AIProviderConfiguration,
-        searchStartedAt: Date
+        searchStartedAt: Date,
+        abstractRankingSeconds: String
     ) async {
         do {
             try ensureSearchIsActive(generation)
@@ -1181,8 +1194,8 @@ final class SearchStore: ObservableObject {
             try ensureSearchIsActive(generation)
             totalCount = aiRankedWorks.count
             searchTimingSummary = evidenceTiming.usedAI
-                ? "首屏 \(rankedResultsSeconds) 秒 · 全文获取 \(evidenceTiming.fullText) 秒 · AI 全文精排 \(evidenceTiming.ai) 秒"
-                : "首屏 \(rankedResultsSeconds) 秒 · 全文获取 \(evidenceTiming.fullText) 秒 · AI 全文精排失败 · 本地证据排序"
+                ? "首屏 \(rankedResultsSeconds) 秒 · 摘要排序 \(abstractRankingSeconds) 秒 · 全文获取 \(evidenceTiming.fullText) 秒 · AI 全文精排 \(evidenceTiming.ai) 秒"
+                : "首屏 \(rankedResultsSeconds) 秒 · 摘要排序 \(abstractRankingSeconds) 秒 · 全文获取 \(evidenceTiming.fullText) 秒 · AI 全文精排失败 · 本地证据排序"
             scheduleCompletedStageSave()
         } catch is CancellationError {
             return
@@ -1196,44 +1209,102 @@ final class SearchStore: ObservableObject {
         }
     }
 
-    private func applyLocalFastRanking(
+    private func rankAllCandidateAbstracts(
         _ candidates: [Work],
         originalRequest: String,
-        retrievalQuery: String
-    ) {
-        let tokens = Set(
-            "\(originalRequest) \(retrievalQuery)"
-                .lowercased()
-                .components(separatedBy: CharacterSet.alphanumerics.inverted)
-                .filter { $0.count >= 3 }
-        )
-        let ranked: [(work: Work, score: Int)] = candidates.enumerated().map { index, work in
-            let title = work.title.lowercased()
-            let abstract = (work.abstractText ?? "").lowercased()
-            let venue = work.venue.lowercased()
-            var score = max(0, 50 - index)
-            for token in tokens {
-                if title.contains(token) { score += 12 }
-                if abstract.contains(token) { score += 4 }
-                if venue.contains(token) { score += 1 }
+        configuration: AIProviderConfiguration,
+        generation: Int
+    ) async throws -> String {
+        guard !candidates.isEmpty else { return "0.0" }
+        let startedAt = Date()
+        let batches: [[(order: Int, work: Work)]] = Self.abstractRankingBatchRanges(
+            totalCount: candidates.count,
+            batchSize: aiAbstractRankingBatchSize
+        ).map { range in
+            candidates[range].enumerated().map { element in
+                (order: range.lowerBound + element.offset, work: element.element)
             }
-            if work.abstractText != nil { score += 4 }
-            if work.openAccess?.isOpenAccess == true { score += 2 }
-            return (work: work, score: min(100, score))
         }
-        .sorted { $0.score > $1.score }
 
-        aiRankedWorks = ranked.map(\.work)
-        aiScores = Dictionary(uniqueKeysWithValues: ranked.map { ($0.work.id, $0.score) })
+        // Each batch is limited to one visible page. The three batches run concurrently so the
+        // all-abstract ordering does not add a full model timeout for every page.
+        let planner = aiQueryPlanner
+        var rankedResults: [AbstractRankResult] = []
+        var completed = 0
+        try await withThrowingTaskGroup(of: [AbstractRankResult].self) { group in
+            for batch in batches {
+                group.addTask {
+                    let inputs = batch.map {
+                        AIAbstractRankingInput(work: $0.work, abstract: $0.work.abstractText)
+                    }
+                    let outputs = try await planner.rankAbstractBatch(
+                        description: originalRequest,
+                        inputs: inputs,
+                        configuration: configuration
+                    )
+                    let resultsByIndex = Dictionary(
+                        uniqueKeysWithValues: outputs.map { ($0.index, $0) }
+                    )
+                    guard resultsByIndex.count == inputs.count else {
+                        throw AIPlannerError.invalidRanking
+                    }
+                    return try inputs.enumerated().map { index, input in
+                        guard let result = resultsByIndex[index] else {
+                            throw AIPlannerError.invalidRanking
+                        }
+                        return (
+                            work: input.work,
+                            score: min(100, max(0, result.score)),
+                            relevant: result.relevant,
+                            reason: result.reason,
+                            order: batch[index].order
+                        )
+                    }
+                }
+            }
+            for try await batch in group {
+                try ensureSearchIsActive(generation)
+                rankedResults.append(contentsOf: batch)
+                completed += batch.count
+                aiRerankState = .ranking(completed: completed, total: candidates.count)
+            }
+        }
+        try ensureSearchIsActive(generation)
+        guard rankedResults.count == candidates.count else {
+            throw AIPlannerError.invalidRanking
+        }
+        applyAbstractRanking(rankedResults)
+        return elapsedSeconds(since: startedAt)
+    }
+
+    nonisolated static func abstractRankingBatchRanges(
+        totalCount: Int,
+        batchSize: Int
+    ) -> [Range<Int>] {
+        guard totalCount > 0, batchSize > 0 else { return [] }
+        return stride(from: 0, to: totalCount, by: batchSize).map { start in
+            start..<min(start + batchSize, totalCount)
+        }
+    }
+
+    private func applyAbstractRanking(_ ranked: [AbstractRankResult]) {
+        let ordered = ranked.sorted {
+            if $0.relevant != $1.relevant { return $0.relevant && !$1.relevant }
+            if $0.score == $1.score { return $0.order < $1.order }
+            return $0.score > $1.score
+        }
+        aiRankedWorks = ordered.map(\.work)
+        aiScores = Dictionary(uniqueKeysWithValues: ordered.map { ($0.work.id, $0.score) })
         aiReasons = Dictionary(
-            uniqueKeysWithValues: ranked.map {
-                ($0.work.id, localPreviewReason(for: $0.work))
+            uniqueKeysWithValues: ordered.map {
+                let reason = $0.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                return ($0.work.id, reason.isEmpty ? localPreviewReason(for: $0.work) : reason)
             }
         )
         aiEvidenceLevels = Dictionary(
-            uniqueKeysWithValues: ranked.map { ($0.work.id, "临时候选") }
+            uniqueKeysWithValues: ordered.map { ($0.work.id, "AI 摘要排序") }
         )
-        aiRerankState = .localReady(candidates: candidates.count)
+        aiRerankState = .completed(candidates: ordered.count, retained: ordered.count)
         aiSecondRerankState = .idle
     }
 
@@ -1308,11 +1379,26 @@ final class SearchStore: ObservableObject {
             limit: aiCandidateLimit
         )
         let openAlexCapped = Array(openAlexWorks.prefix(aiCandidateLimit))
-        let merged = Self.mergeDedup(primary: openAlexCapped, additional: pubMedWorks)
-        // Keep every OpenAlex candidate and reserve pool slots for PubMed-only finds, so
-        // PubMed's unique papers are not truncated away when OpenAlex already fills the limit.
-        let addedFromPubMed = min(merged.count - openAlexCapped.count, aiCandidateLimit / 2)
-        let candidates = Array(merged.prefix(openAlexCapped.count + addedFromPubMed))
+        let pubMedOnly = Array(
+            Self.mergeDedup(primary: openAlexCapped, additional: pubMedWorks)
+                .dropFirst(openAlexCapped.count)
+        )
+        // The global abstract rank runs in exactly three 20-paper batches. Reserve up to one
+        // third of the 60-paper pool for PubMed-only discoveries, then backfill with OpenAlex.
+        let pubMedTarget = min(aiCandidateLimit / 3, pubMedOnly.count)
+        let openAlexTarget = max(0, aiCandidateLimit - pubMedTarget)
+        let preferred = Self.mergeDedup(
+            primary: Array(openAlexCapped.prefix(openAlexTarget)),
+            additional: Array(pubMedOnly.prefix(pubMedTarget))
+        )
+        let candidates = Array(
+            Self.mergeDedup(
+                primary: preferred,
+                additional: Array(openAlexCapped.dropFirst(openAlexTarget))
+                    + Array(pubMedOnly.dropFirst(pubMedTarget))
+            )
+            .prefix(aiCandidateLimit)
+        )
 
         guard !candidates.isEmpty else {
             let errors = pages.compactMap(\.error)
@@ -1321,6 +1407,8 @@ final class SearchStore: ObservableObject {
             )
         }
 
+        let pubMedIDs = Set(pubMedOnly.map(\.id))
+        let addedFromPubMed = candidates.filter { pubMedIDs.contains($0.id) }.count
         let pubMedNotice = addedFromPubMed > 0
             ? "PubMed 为本次检索补充了 \(addedFromPubMed) 篇 OpenAlex 未覆盖的论文。"
             : nil
@@ -1702,7 +1790,9 @@ final class SearchStore: ObservableObject {
             return
         }
         let fullText = levels.filter { $0.contains("全文") }.count
-        if levels.allSatisfy({ $0.hasPrefix("AI ") }) {
+        if levels.allSatisfy({
+            $0.hasPrefix("AI 全文精排") || $0.hasPrefix("AI 摘要精排")
+        }) {
             aiSecondRerankState = .completed(
                 fullText: fullText,
                 abstractOnly: levels.count - fullText,

@@ -158,6 +158,58 @@ struct AIQueryPlanner {
         return valid
     }
 
+    func rankAbstractBatch(
+        description: String,
+        inputs: [AIAbstractRankingInput],
+        configuration: AIProviderConfiguration
+    ) async throws -> [AIRankedCandidate] {
+        guard configuration.isConfigured else {
+            throw AIPlannerError.notConfigured(configuration.provider)
+        }
+        guard !inputs.isEmpty else { return [] }
+
+        let candidateText = inputs.enumerated().map { index, input in
+            let abstract = String((input.abstract ?? "No abstract available").prefix(700))
+            return """
+            [\(index)]
+            Title: \(input.work.title)
+            Year: \(input.work.publicationYear.map(String.init) ?? "unknown")
+            Venue: \(input.work.venue)
+            Abstract: \(abstract)
+            """
+        }.joined(separator: "\n\n")
+
+        let prompt = """
+        Rank these papers for the user's ORIGINAL research request using only the supplied title, \
+        venue, year, and abstract. Judge whether each paper actually answers the request, not \
+        keyword overlap. Return exactly one item for every supplied index as JSON:
+        {"rankings":[{"index":0,"score":0,"relevant":false,"reason":"中文摘要依据"}]}
+
+        score must be an integer from 0 to 100. relevant is true only when the supplied abstract \
+        is genuinely useful. reason must be one short Simplified Chinese sentence based only on \
+        the supplied metadata and abstract. Do not invent facts or use outside knowledge.
+
+        Original request: \(description)
+
+        Candidates:
+        \(candidateText)
+        """
+
+        let data = try await generateJSON(
+            prompt: prompt,
+            configuration: configuration,
+            maxTokens: max(1_200, inputs.count * 80),
+            timeout: 25
+        )
+        let decoded = try decodeJSON(AIRankingResponse.self, from: data)
+        let valid = decoded.rankings.filter { inputs.indices.contains($0.index) }
+        guard valid.count == inputs.count,
+              Set(valid.map(\.index)).count == inputs.count else {
+            throw AIPlannerError.invalidRanking
+        }
+        return valid
+    }
+
     func translateBatch(
         _ items: [AITranslationInput],
         configuration: AIProviderConfiguration

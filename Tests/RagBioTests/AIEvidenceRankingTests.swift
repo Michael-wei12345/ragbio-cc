@@ -42,7 +42,51 @@ import Testing
         #expect(ranked.map(\.score) == [91])
         #expect(ranked.map(\.relevant) == [true])
         #expect(ranked.map(\.reason) == ["病因相关"])
-        #expect(EvidenceRankingURLProtocol.lastPrompt?.contains("POLIO_ETIOLOGY_MARKER") == true)
+        #expect(
+            EvidenceRankingURLProtocol.prompts.contains {
+                $0.contains("POLIO_ETIOLOGY_MARKER")
+            }
+        )
+    }
+
+    @Test func abstractRankingUsesOnlyTheSuppliedAbstract() async throws {
+        EvidenceRankingURLProtocol.reset()
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [EvidenceRankingURLProtocol.self]
+        let session = URLSession(configuration: sessionConfiguration)
+        defer { session.invalidateAndCancel() }
+        let work = makeWork(title: "Abstract only paper")
+        let configuration = AIProviderConfiguration(
+            provider: .openAI,
+            apiKey: "test-key",
+            model: "test-model",
+            baseURL: "https://example.test"
+        )
+
+        let ranked = try await AIQueryPlanner(session: session).rankAbstractBatch(
+            description: "Etiology of poliomyelitis",
+            inputs: [
+                AIAbstractRankingInput(
+                    work: work,
+                    abstract: "ABSTRACT_ONLY_MARKER describes the viral cause."
+                )
+            ],
+            configuration: configuration
+        )
+
+        #expect(ranked.map(\.index) == [0])
+        #expect(
+            EvidenceRankingURLProtocol.prompts.contains {
+                $0.contains("ABSTRACT_ONLY_MARKER") && !$0.contains("Full-text evidence:")
+            }
+        )
+    }
+
+    @Test func abstractRankingSplitsSixtyCandidatesIntoThreePages() {
+        #expect(
+            SearchStore.abstractRankingBatchRanges(totalCount: 60, batchSize: 20)
+                == [0..<20, 20..<40, 40..<60]
+        )
     }
 
     @Test func pageRankingReplacesOnlyTheRequestedPage() {
@@ -112,17 +156,17 @@ import Testing
 
 private final class EvidenceRankingURLProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var storedPrompt: String?
+    nonisolated(unsafe) private static var storedPrompts: [String] = []
 
-    static var lastPrompt: String? {
+    static var prompts: [String] {
         lock.lock()
         defer { lock.unlock() }
-        return storedPrompt
+        return storedPrompts
     }
 
     static func reset() {
         lock.lock()
-        storedPrompt = nil
+        storedPrompts = []
         lock.unlock()
     }
 
@@ -140,7 +184,9 @@ private final class EvidenceRankingURLProtocol: URLProtocol, @unchecked Sendable
             return content
         }
         Self.lock.lock()
-        Self.storedPrompt = prompt
+        if let prompt {
+            Self.storedPrompts.append(prompt)
+        }
         Self.lock.unlock()
 
         let ranking = #"{"rankings":[{"index":0,"score":91,"relevant":true,"reason":"病因相关"}]}"#

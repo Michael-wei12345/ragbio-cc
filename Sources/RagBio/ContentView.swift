@@ -94,13 +94,13 @@ private struct SidebarView: View {
         }
         switch store.aiRerankState {
         case .fetchingCandidates:
-            return "正在并行获取 2 批候选论文…"
+            return "正在获取最多 60 篇候选论文…"
         case let .localReady(candidates):
-            return "已显示 \(candidates) 篇候选，正在准备第 \(store.currentPage) 页全文精排…"
+            return "已恢复 \(candidates) 篇历史候选；重新检索后会按摘要排序…"
         case let .ranking(completed, total):
-            return "AI 正在重排候选论文 \(completed)/\(total)…"
+            return "AI 正在按全部摘要排序 \(completed)/\(total)…"
         case let .failed(_, candidates):
-            return "候选排序未完成，当前显示 \(candidates) 篇结果…"
+            return "候选排序失败，当前保留 \(candidates) 篇历史结果…"
         default:
             return "正在检索 OpenAlex…"
         }
@@ -129,9 +129,9 @@ private struct SidebarView: View {
                 default:
                     switch store.aiRerankState {
                     case let .localReady(candidates):
-                        Text("候选 \(candidates) 篇 · 第 \(store.currentPage) 页等待 AI 全文精排")
+                        Text("已恢复 \(candidates) 篇历史候选")
                     case let .completed(candidates, retained):
-                        Text("已获取 \(candidates) 篇候选 · 全部保留 \(retained) 篇")
+                        Text("AI 摘要排序 \(candidates) 篇 · 全部保留 \(retained) 篇")
                     case let .failed(_, candidates):
                         Text("候选排序未完成 · 当前保留 \(candidates) 篇")
                     default:
@@ -237,12 +237,12 @@ private struct SearchHeader: View {
 
             switch store.aiRerankState {
             case .fetchingCandidates:
-                Label("正在获取 50 篇候选论文", systemImage: "tray.and.arrow.down")
+                Label("正在获取最多 60 篇候选论文", systemImage: "tray.and.arrow.down")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case let .localReady(candidates):
                 Label(
-                    "已先显示 \(candidates) 篇候选，后台读取当前页全文并进行 AI 精排",
+                    "已恢复 \(candidates) 篇历史候选；重新检索后会按全部摘要排序",
                     systemImage: "bolt"
                 )
                 .font(.caption)
@@ -250,12 +250,12 @@ private struct SearchHeader: View {
             case let .ranking(completed, total):
                 HStack {
                     ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                    Text("AI 重排 \(completed)/\(total)")
+                    Text("AI 摘要排序 \(completed)/\(total)")
                         .font(.caption.monospacedDigit())
                 }
             case let .completed(candidates, retained):
                 Label(
-                    "已获取 \(candidates) 篇候选，列表保留 \(retained) 篇",
+                    "AI 已按全部摘要排序 \(candidates) 篇候选，列表保留 \(retained) 篇",
                     systemImage: "checkmark.circle"
                 )
                 .font(.caption)
