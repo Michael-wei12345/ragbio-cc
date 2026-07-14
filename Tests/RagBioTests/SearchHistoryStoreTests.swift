@@ -243,6 +243,65 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: corruptURL.path))
     }
 
+    @Test func failedIndividualRollbackLeavesRecoverableMarkerThatBootstrapRestores() async throws {
+        let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
+        let records = root.appendingPathComponent("records")
+        let visible = makeRecord(query: "duplicate", works: [], date: Date(timeIntervalSince1970: 2))
+        let shadow = makeRecord(query: " DUPLICATE ", works: [], date: Date(timeIntervalSince1970: 1))
+        let store = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession"),
+            rollbackRestoreFailureID: shadow.id
+        )
+        try await store.bootstrap()
+        _ = try await store.save(visible)
+        try JSONEncoder().encode(shadow).write(
+            to: records.appendingPathComponent("\(shadow.id.uuidString).json")
+        )
+        let corruptURL = records.appendingPathComponent("corrupt.json")
+        try Data("corrupt".utf8).write(to: corruptURL)
+        try setPermissions(0o500, at: root)
+
+        var message = ""
+        do {
+            _ = try await store.delete(id: visible.id)
+        } catch {
+            message = error.localizedDescription
+        }
+        try setPermissions(0o700, at: root)
+
+        let rollbackURLs = try FileManager.default.contentsOfDirectory(
+            at: records,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "rollback" }
+        #expect(message.contains("rollback"))
+        #expect(message.contains(shadow.id.uuidString))
+        #expect(rollbackURLs.count == 1)
+        #expect(rollbackURLs.first?.lastPathComponent.contains(shadow.id.uuidString) == true)
+        #expect(!FileManager.default.fileExists(
+            atPath: records.appendingPathComponent("\(shadow.id.uuidString).json").path
+        ))
+        #expect(FileManager.default.fileExists(
+            atPath: records.appendingPathComponent("\(visible.id.uuidString).json").path
+        ))
+        #expect(FileManager.default.fileExists(atPath: corruptURL.path))
+
+        try Data("force rebuild".utf8).write(to: root.appendingPathComponent("index.json"))
+        let restarted = SearchHistoryStore(
+            root: root,
+            legacyRoot: root.deletingLastPathComponent().appendingPathComponent("SearchSession")
+        )
+        try await restarted.bootstrap()
+
+        #expect(try await restarted.loadIndex().summaries.map(\.id) == [visible.id])
+        #expect(try await restarted.loadRecord(id: shadow.id) == shadow)
+        #expect(try FileManager.default.contentsOfDirectory(
+            at: records,
+            includingPropertiesForKeys: nil
+        ).allSatisfy { $0.pathExtension != "rollback" })
+        #expect(FileManager.default.fileExists(atPath: corruptURL.path))
+    }
+
     @Test func firstUsableStageReconcilesBridgedUseForPersistenceCountAndExport() async throws {
         let root = try makeTemporaryDirectory().appendingPathComponent("SearchHistory")
         let store = SearchHistoryStore(

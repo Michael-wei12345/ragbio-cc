@@ -4,12 +4,18 @@ enum SearchHistoryStoreError: LocalizedError {
     case recordNotFound
     case corruptRecord
     case normalizedQueryConflict
+    case rollbackFailed(original: String, failures: [String])
+    case rollbackRecoveryFailed(failures: [String])
 
     var errorDescription: String? {
         switch self {
         case .recordNotFound: return "Search history was not found."
         case .corruptRecord: return "This search history is damaged and could not be opened."
         case .normalizedQueryConflict: return "A different search history already uses this normalized query."
+        case let .rollbackFailed(original, failures):
+            return "Search history deletion failed (\(original)), and rollback needs recovery: \(failures.joined(separator: "; "))"
+        case let .rollbackRecoveryFailed(failures):
+            return "Search history rollback recovery could not finish: \(failures.joined(separator: "; "))"
         }
     }
 }
@@ -44,6 +50,8 @@ actor SearchHistoryStore {
     private let useReturnDelay: Duration
     private let firstUsableReturnDelay: Duration
     private let indexReturnDelay: Duration
+    // ponytail: nil in the app; one record ID can force the rollback path in tests.
+    private let rollbackRestoreFailureID: UUID?
     private(set) var isUseReturnDelayed = false
     private(set) var isFirstUsableReturnDelayed = false
     private(set) var isIndexReturnDelayed = false
@@ -55,7 +63,8 @@ actor SearchHistoryStore {
         persistenceDelay: Duration = .zero,
         useReturnDelay: Duration = .zero,
         firstUsableReturnDelay: Duration = .zero,
-        indexReturnDelay: Duration = .zero
+        indexReturnDelay: Duration = .zero,
+        rollbackRestoreFailureID: UUID? = nil
     ) {
         let applicationRoot = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -72,10 +81,12 @@ actor SearchHistoryStore {
         self.useReturnDelay = useReturnDelay
         self.firstUsableReturnDelay = firstUsableReturnDelay
         self.indexReturnDelay = indexReturnDelay
+        self.rollbackRestoreFailureID = rollbackRestoreFailureID
     }
 
     func bootstrap() throws {
         try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+        try recoverRollbackTombstones()
         var index = try readIndexOrRebuild()
         if FileManager.default.fileExists(atPath: legacyResetMarkerURL.path) {
             if index.legacyResetVersion != 1 {
@@ -274,10 +285,38 @@ actor SearchHistoryStore {
             }
             try writeIndex(index)
         } catch {
+            let originalError = error
+            var rollbackFailures: [String] = []
             for move in moved.reversed() {
-                try? FileManager.default.moveItem(at: move.tombstone, to: move.source)
+                do {
+                    let sourceID = UUID(
+                        uuidString: move.source.deletingPathExtension().lastPathComponent
+                    )
+                    if sourceID == rollbackRestoreFailureID {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
+                    try FileManager.default.moveItem(at: move.tombstone, to: move.source)
+                } catch {
+                    let restoreError = error
+                    let marker = move.tombstone.deletingPathExtension()
+                        .appendingPathExtension("rollback")
+                    do {
+                        try FileManager.default.moveItem(at: move.tombstone, to: marker)
+                        rollbackFailures.append(
+                            "\(move.source.deletingPathExtension().lastPathComponent): \(restoreError.localizedDescription); marker \(marker.path)"
+                        )
+                    } catch {
+                        rollbackFailures.append(
+                            "\(move.source.deletingPathExtension().lastPathComponent): \(restoreError.localizedDescription); marker rename failed (\(error.localizedDescription)); tombstone \(move.tombstone.path)"
+                        )
+                    }
+                }
             }
-            throw error
+            guard !rollbackFailures.isEmpty else { throw originalError }
+            throw SearchHistoryStoreError.rollbackFailed(
+                original: originalError.localizedDescription,
+                failures: rollbackFailures
+            )
         }
         for move in moved { try? FileManager.default.removeItem(at: move.tombstone) }
         return index
@@ -292,6 +331,55 @@ actor SearchHistoryStore {
         let rebuilt = try rebuildIndex()
         try writeIndex(rebuilt)
         return rebuilt
+    }
+
+    private func recoverRollbackTombstones() throws {
+        let markers = try FileManager.default.contentsOfDirectory(
+            at: records,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "rollback" }.sorted { $0.path < $1.path }
+        var failures: [String] = []
+        for marker in markers {
+            let filename = marker.deletingPathExtension().lastPathComponent
+            guard filename.count >= 36,
+                  let id = UUID(uuidString: String(filename.prefix(36))) else {
+                failures.append("unrecognized marker \(marker.path)")
+                continue
+            }
+            let original = recordURL(id)
+            if FileManager.default.fileExists(atPath: original.path) {
+                guard isValidRecord(at: original, expectedID: id) else {
+                    failures.append("invalid original \(original.path); marker retained at \(marker.path)")
+                    continue
+                }
+                do {
+                    try FileManager.default.removeItem(at: marker)
+                } catch {
+                    failures.append("could not remove redundant marker \(marker.path): \(error.localizedDescription)")
+                }
+            } else {
+                guard isValidRecord(at: marker, expectedID: id) else {
+                    failures.append("invalid marker retained at \(marker.path)")
+                    continue
+                }
+                do {
+                    try FileManager.default.moveItem(at: marker, to: original)
+                } catch {
+                    failures.append("could not restore \(marker.path) to \(original.path): \(error.localizedDescription)")
+                }
+            }
+        }
+        if !failures.isEmpty {
+            throw SearchHistoryStoreError.rollbackRecoveryFailed(failures: failures)
+        }
+    }
+
+    private func isValidRecord(at url: URL, expectedID: UUID) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              let record = try? decoder.decode(SearchHistoryRecord.self, from: data) else {
+            return false
+        }
+        return isValid(record, expectedID: expectedID)
     }
 
     private func delayTokenizedPersistence() async throws {

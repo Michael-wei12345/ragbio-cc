@@ -566,7 +566,11 @@ final class SearchStore: ObservableObject {
             if let current = currentHistoryRecord,
                current.id == result.record.id {
                 var merged = result.record
-                merged.useLedger = current.useLedger
+                var newestLedger = current.useLedger
+                newestLedger.reconcile(
+                    with: result.record.snapshot.rankedWorks + result.record.snapshot.allWorks
+                )
+                merged.useLedger = newestLedger
                 currentHistoryRecord = merged
                 publishedRecord = merged
             } else {
@@ -574,6 +578,9 @@ final class SearchStore: ObservableObject {
                 publishedRecord = result.record
             }
             publishStageHistorySummaries(result.index.summaries)
+            if let index = historySummaries.firstIndex(where: { $0.id == publishedRecord.id }) {
+                historySummaries[index].useCount = publishedRecord.useLedger.papers.count
+            }
             isRefreshingHistory = false
             historyRefreshFallbackRecord = nil
             applyUseLedgerToVisibleWorks(publishedRecord.useLedger)

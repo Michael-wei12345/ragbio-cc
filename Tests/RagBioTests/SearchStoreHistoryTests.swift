@@ -874,6 +874,124 @@ import Testing
         #expect(!store.isRefreshingHistory)
     }
 
+    @Test func firstUsableCommitPublishesTheActorsReconciledBridgeLedgerEverywhere() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let doiOnly = makeWork(
+            id: "doi-only",
+            doi: "10.1000/bridge",
+            pmid: nil,
+            title: "DOI source"
+        )
+        let pmidOnly = makeWork(
+            id: "pmid-only",
+            doi: nil,
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "PMID source"
+        )
+        let bridge = makeWork(
+            id: "bridge",
+            doi: "10.1000/bridge",
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "Refreshed bridge"
+        )
+        var ledger = UseLedger()
+        ledger.mark(doiOnly, at: Date(timeIntervalSince1970: 1))
+        ledger.mark(pmidOnly, at: Date(timeIntervalSince1970: 2))
+        let old = makeRecord(
+            query: "bridge",
+            works: [doiOnly],
+            date: Date(timeIntervalSince1970: 1),
+            useLedger: ledger
+        )
+        _ = try await historyStore.save(old)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(old.id)
+        let generation = await store.beginHistorySearch(displayQuery: "bridge")
+        var staged = old
+        staged.snapshot = makeSnapshot(query: "bridge", works: [bridge])
+        store.restoreHistoryRecord(staged)
+
+        await store.commitFirstUsableHistoryStage(
+            displayQuery: "bridge",
+            startedAt: Date(timeIntervalSince1970: 10),
+            generation: generation
+        )
+
+        #expect(store.currentHistoryRecord?.useLedger.papers.count == 1)
+        #expect(store.currentHistoryRecord?.useLedger.papers.first?.work.id == bridge.id)
+        #expect(store.useWorks.map(\.id) == [bridge.id])
+        #expect(store.scanDecisions.keys.sorted() == [bridge.id])
+        #expect(store.historySummaries.first(where: { $0.id == old.id })?.useCount == 1)
+        let disk = try await historyStore.loadRecord(id: old.id)
+        #expect(disk.useLedger.papers.count == 1)
+        let export = SearchHistoryExportBuilder.make(records: [disk])
+        #expect(export.urlCount == 1)
+        #expect(export.text.components(separatedBy: "https://doi.org/10.1000/bridge").count - 1 == 1)
+    }
+
+    @Test func bridgeReconciliationPreservesAConcurrentNewUseDuringFirstStageReturn() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession"),
+            firstUsableReturnDelay: .seconds(2)
+        )
+        try await historyStore.bootstrap()
+        let doiOnly = makeWork(id: "doi-only", doi: "10.1000/bridge", pmid: nil, title: "DOI")
+        let pmidOnly = makeWork(
+            id: "pmid-only",
+            doi: nil,
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "PMID"
+        )
+        let bridge = makeWork(
+            id: "bridge",
+            doi: "10.1000/bridge",
+            pmid: "https://pubmed.ncbi.nlm.nih.gov/987/",
+            title: "Bridge"
+        )
+        let concurrent = makeWork(
+            id: "concurrent",
+            doi: "10.1000/concurrent",
+            pmid: nil,
+            title: "Concurrent"
+        )
+        var ledger = UseLedger()
+        ledger.mark(doiOnly)
+        ledger.mark(pmidOnly)
+        let old = makeRecord(query: "bridge", works: [doiOnly], date: Date(), useLedger: ledger)
+        _ = try await historyStore.save(old)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(old.id)
+        let generation = await store.beginHistorySearch(displayQuery: "bridge")
+        var staged = old
+        staged.snapshot = makeSnapshot(query: "bridge", works: [bridge])
+        store.restoreHistoryRecord(staged)
+        let pending = Task { @MainActor in
+            await store.commitFirstUsableHistoryStage(
+                displayQuery: "bridge",
+                startedAt: Date(),
+                generation: generation
+            )
+        }
+        while await !historyStore.isFirstUsableReturnDelayed { await Task.yield() }
+
+        await store.setUse(true, for: concurrent)
+        await pending.value
+
+        #expect(store.currentHistoryRecord?.useLedger.papers.map(\.work.id) == [bridge.id, concurrent.id])
+        #expect(store.useWorks.map(\.id) == [bridge.id, concurrent.id])
+        #expect(store.scanDecisions.count == 2)
+        #expect(store.historySummaries.first(where: { $0.id == old.id })?.useCount == 2)
+        let disk = try await historyStore.loadRecord(id: old.id)
+        #expect(disk.useLedger.papers.map(\.work.id) == [bridge.id, concurrent.id])
+    }
+
     @Test func delayedFirstUsableReturnPreservesNewerVisibleUse() async throws {
         let root = try makeTemporaryDirectory()
         let historyStore = SearchHistoryStore(
