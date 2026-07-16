@@ -1958,6 +1958,8 @@ private struct ReviewEnginePreviewCard: View {
                                 atPath: artifacts.manuscriptURL.path
                             ))
                         Button("Show in Finder") { probe.showInFinder() }
+                        Button("Run Live Codex Probe") { probe.startLive() }
+                            .disabled(probe.authMethod != .chatgpt)
                     default:
                         Button("Run Fixture Probe") { probe.startFixture() }
                         Button("Run Live Codex Probe") { probe.startLive() }
@@ -2002,6 +2004,10 @@ private struct ReviewEnginePreviewCard: View {
             Label("\(category.rawValue.capitalized): \(message)", systemImage: "exclamationmark.triangle")
                 .font(.caption)
                 .foregroundStyle(.orange)
+        case let .connected(threadID):
+            Label("Live Codex connection completed · Thread \(threadID)", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
         case .completed:
             Label("Connection test completed. Both files are ready.", systemImage: "checkmark.circle.fill")
                 .font(.caption)

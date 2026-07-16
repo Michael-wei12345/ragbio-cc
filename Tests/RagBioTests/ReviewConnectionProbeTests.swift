@@ -59,6 +59,35 @@ import Testing
         ))
     }
 
+    @Test func liveCompletionWithoutFixtureArtifactsIsSuccessful() throws {
+        let root = try makeTemporaryDirectory()
+        let probe = ReviewConnectionProbe(
+            outputRoot: root,
+            checkpointURL: root.appendingPathComponent("checkpoint.json")
+        )
+
+        probe.apply(.started(requestID: "r1", threadID: "live-thread"))
+        probe.apply(.completed(requestID: "r1", threadID: "live-thread"))
+
+        #expect(probe.state == .connected(threadID: "live-thread"))
+    }
+
+    @Test func fixtureCompletionStillRequiresArtifacts() throws {
+        let root = try makeTemporaryDirectory()
+        let probe = ReviewConnectionProbe(
+            outputRoot: root,
+            checkpointURL: root.appendingPathComponent("checkpoint.json")
+        )
+
+        probe.apply(.started(requestID: "r1", threadID: "fixture-r1"))
+        probe.apply(.completed(requestID: "r1", threadID: "fixture-r1"))
+
+        #expect(probe.state == .blocked(
+            category: .runtime,
+            message: "The fixture connection test completed without its files."
+        ))
+    }
+
     @Test func pausedCheckpointRestoresWithoutAutomaticallyRunning() throws {
         let root = try makeTemporaryDirectory()
         let checkpointURL = root.appendingPathComponent("checkpoint.json")

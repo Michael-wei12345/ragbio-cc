@@ -25,6 +25,7 @@ final class ReviewConnectionProbe: ObservableObject {
         case running(stage: String, detail: String)
         case paused(threadID: String)
         case blocked(category: ReviewHelperFailureCategory, message: String)
+        case connected(threadID: String)
         case completed(artifacts: ReviewProbeArtifacts)
     }
 
@@ -155,14 +156,16 @@ final class ReviewConnectionProbe: ObservableObject {
             self.threadID = threadID
             state = .paused(threadID: threadID)
             saveCheckpoint(status: .paused)
-        case .completed:
+        case let .completed(_, completedThreadID):
             if let artifacts {
                 state = .completed(artifacts: artifacts)
-            } else {
+            } else if completedThreadID.hasPrefix("fixture-") {
                 state = .blocked(
                     category: .runtime,
-                    message: "The connection test completed without its fixture files."
+                    message: "The fixture connection test completed without its files."
                 )
+            } else {
+                state = .connected(threadID: completedThreadID)
             }
             resumeCheckpoint = nil
             deleteCheckpoint()
