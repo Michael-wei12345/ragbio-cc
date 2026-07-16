@@ -437,6 +437,8 @@ private struct ScanDecisionFilterBar: View {
     @ObservedObject var store: SearchStore
     @ObservedObject var reviewJobs: ReviewJobCoordinator
     @State private var isExportPresented = false
+    @State private var isHoveringFilter = false
+    @State private var isClearConfirmationPresented = false
 
     var body: some View {
         VStack(spacing: 7) {
@@ -444,13 +446,30 @@ private struct ScanDecisionFilterBar: View {
                 Text("Scan")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
-                Picker("Scan decision filter", selection: $store.decisionFilter) {
-                    ForEach([ScanDecisionFilter.all, .candidate, .use]) { filter in
-                        Text(filter.title).tag(filter)
+
+                HStack(spacing: 6) {
+                    Picker("Scan decision filter", selection: $store.decisionFilter) {
+                        ForEach([ScanDecisionFilter.all, .candidate, .use]) { filter in
+                            Text(filter.title).tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    if isHoveringFilter,
+                       store.decisionFilter == .use,
+                       store.hasMarkedUseWorks {
+                        Button("Clear all") {
+                            isClearConfirmationPresented = true
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .foregroundStyle(.red)
+                        .transition(.opacity)
                     }
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+                .onHover { isHoveringFilter = $0 }
+                .animation(.easeOut(duration: 0.12), value: isHoveringFilter)
             }
 
             HStack(spacing: 8) {
@@ -483,6 +502,18 @@ private struct ScanDecisionFilterBar: View {
         }
         .sheet(isPresented: $isExportPresented) {
             UseURLExportSheet(store: store, isPresented: $isExportPresented)
+        }
+        .confirmationDialog(
+            "Clear all Use selections?",
+            isPresented: $isClearConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Clear all", role: .destructive) {
+                store.clearAllUse()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This only affects the current search history.")
         }
     }
 }
@@ -588,9 +619,16 @@ private struct ScanDecisionControl: View {
     var body: some View {
         if compact {
             if decision == .use {
-                Label("Use", systemImage: "checkmark.circle.fill")
-                    .font(.caption.bold())
-                    .foregroundStyle(.green)
+                Button {
+                    onDecision(.unreviewed)
+                } label: {
+                    Label("Use", systemImage: "checkmark.circle.fill")
+                        .font(.caption.bold())
+                        .foregroundStyle(.green)
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.mini)
+                .help("Remove from Use")
             }
         } else {
             HStack(spacing: 7) {

@@ -191,6 +191,13 @@ actor SearchHistoryStore {
         return record
     }
 
+    func clearUse(historyID: UUID) throws -> SearchHistoryRecord {
+        var record = try loadRecord(id: historyID)
+        record.useLedger.removeAll()
+        _ = try save(record)
+        return record
+    }
+
     func updateSnapshot(
         historyID: UUID,
         snapshot: SearchHistorySnapshot

@@ -30,6 +30,66 @@ import Testing
         #expect(store.filteredWorks.map(\.id) == [primary.id, unknown.id])
     }
 
+    @Test func switchingCandidateFilterReusesCompletedFineRankingWithoutNetworkWork() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        let primary = makeWork(id: "primary", title: "Primary study")
+        let review = makeWork(id: "review", title: "Review", type: "review")
+        var record = makeRecord(
+            query: "filter cache",
+            works: [primary, review],
+            date: Date()
+        )
+        record.snapshot.aiScores = [primary.id: 91, review.id: 72]
+        record.snapshot.aiReasons = [primary.id: "Primary", review.id: "Background"]
+        record.snapshot.aiEvidenceLevels = [
+            primary.id: "AI 全文精排",
+            review.id: "AI 摘要精排"
+        ]
+        record.snapshot.completedAIStage = .evidenceRanking
+        try await historyStore.bootstrap()
+        _ = try await historyStore.save(record)
+
+        RecordingURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RecordingURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let store = SearchStore(
+            client: OpenAlexClient(session: session),
+            fullTextService: FullTextService(session: session),
+            aiQueryPlanner: AIQueryPlanner(session: session),
+            historyStore: historyStore,
+            restoreOnInit: false
+        )
+        await store.openHistory(record.id)
+        let completedState = store.aiSecondRerankState
+        let scores = store.aiScores
+        let reasons = store.aiReasons
+
+        let hostingView = NSHostingView(rootView: ContentView(store: store))
+        hostingView.frame = NSRect(x: 0, y: 0, width: 1_100, height: 760)
+        hostingView.layoutSubtreeIfNeeded()
+        store.decisionFilter = .candidate
+        hostingView.layoutSubtreeIfNeeded()
+        store.decisionFilter = .all
+        hostingView.layoutSubtreeIfNeeded()
+        store.decisionFilter = .candidate
+        hostingView.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(250))
+
+        #expect(store.filteredWorks.map(\.id) == [primary.id])
+        #expect(store.aiSecondRerankState == completedState)
+        #expect(store.aiScores == scores)
+        #expect(store.aiReasons == reasons)
+        #expect(RecordingURLProtocol.requestCount == 0)
+        #expect(store.aiVisiblePageFullTextInProgress.isEmpty)
+        withExtendedLifetime(hostingView) {}
+    }
+
     @Test func mountingRestoredSelectionDoesNotStartNetworkOrSummaryWork() async throws {
         let root = try makeTemporaryDirectory()
         let historyRoot = root.appendingPathComponent("SearchHistory")
@@ -1439,6 +1499,49 @@ import Testing
         #expect(store.currentHistoryRecord?.useLedger.contains(work) == false)
         #expect(store.historySummaries.first?.useCount == 0)
         #expect(try await historyStore.loadRecord(id: record.id).useLedger.contains(work) == false)
+    }
+
+    @Test func clearAllUseOnlyChangesTheCurrentHistoryAndPersistsOnce() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        try await historyStore.bootstrap()
+        let firstWork = makeWork(id: "first-use", doi: "10.1000/first-use")
+        let secondWork = makeWork(id: "second-use", doi: "10.1000/second-use")
+        var currentLedger = UseLedger()
+        currentLedger.mark(firstWork)
+        currentLedger.mark(secondWork)
+        let current = makeRecord(
+            query: "current",
+            works: [firstWork, secondWork],
+            date: Date(),
+            useLedger: currentLedger
+        )
+        let otherWork = makeWork(id: "other-use", doi: "10.1000/other-use")
+        var otherLedger = UseLedger()
+        otherLedger.mark(otherWork)
+        let other = makeRecord(
+            query: "other",
+            works: [otherWork],
+            date: Date().addingTimeInterval(-1),
+            useLedger: otherLedger
+        )
+        _ = try await historyStore.save(other)
+        _ = try await historyStore.save(current)
+        let store = SearchStore(historyStore: historyStore, restoreOnInit: false)
+        await store.openHistory(current.id)
+        store.decisionFilter = .use
+
+        store.clearAllUse()
+        await store.waitForPendingUseMutations()
+
+        #expect(store.useWorks.isEmpty)
+        #expect(store.filteredWorks.isEmpty)
+        #expect(store.historySummaries.first(where: { $0.id == current.id })?.useCount == 0)
+        #expect(try await historyStore.loadRecord(id: current.id).useLedger.papers.isEmpty)
+        #expect(try await historyStore.loadRecord(id: other.id).useLedger.contains(otherWork))
     }
 
     @Test func pendingUseAcrossHistorySwitchNeverPublishesIntoNewHistory() async throws {

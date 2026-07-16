@@ -250,6 +250,12 @@ struct SearchHistoryField: View {
             }
         }
         .zIndex(20)
+        .background(alignment: .topLeading) {
+            SearchHistoryOutsideClickMonitor(isActive: focused) {
+                focused = false
+            }
+            .frame(height: 310)
+        }
         .alert(
             "Delete Search History?",
             isPresented: Binding(
@@ -273,5 +279,69 @@ struct SearchHistoryField: View {
         guard SearchHistorySuggestions.canSubmit(query: store.query) else { return }
         focused = false
         Task { await store.search() }
+    }
+}
+
+private struct SearchHistoryOutsideClickMonitor: NSViewRepresentable {
+    let isActive: Bool
+    let onOutsideClick: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> PassthroughView {
+        let view = PassthroughView()
+        context.coordinator.view = view
+        context.coordinator.installMonitor()
+        return view
+    }
+
+    func updateNSView(_ nsView: PassthroughView, context: Context) {
+        context.coordinator.view = nsView
+        context.coordinator.isActive = isActive
+        context.coordinator.onOutsideClick = onOutsideClick
+    }
+
+    static func dismantleNSView(_ nsView: PassthroughView, coordinator: Coordinator) {
+        coordinator.removeMonitor()
+    }
+
+    final class Coordinator {
+        weak var view: NSView?
+        var isActive = false
+        var onOutsideClick: (() -> Void)?
+        private var monitor: Any?
+
+        func installMonitor() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+                guard let self,
+                      self.isActive,
+                      let view = self.view,
+                      event.window === view.window else { return event }
+                let location = view.convert(event.locationInWindow, from: nil)
+                guard !view.bounds.contains(location) else { return event }
+                DispatchQueue.main.async { [weak self] in
+                    self?.onOutsideClick?()
+                }
+                return event
+            }
+        }
+
+        func removeMonitor() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+            }
+            monitor = nil
+        }
+
+        deinit {
+            removeMonitor()
+        }
+    }
+
+    final class PassthroughView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }

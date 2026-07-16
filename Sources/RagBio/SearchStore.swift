@@ -777,6 +777,15 @@ final class SearchStore: ObservableObject {
         setScanDecision(.unreviewed, for: work)
     }
 
+    func clearAllUse() {
+        guard let historyID = currentHistoryID else { return }
+        let previous = useMutationTask
+        useMutationTask = Task { [weak self] in
+            await previous?.value
+            await self?.clearAllUse(expectedHistoryID: historyID)
+        }
+    }
+
     func waitForPendingUseMutations() async {
         await useMutationTask?.value
     }
@@ -835,6 +844,39 @@ final class SearchStore: ObservableObject {
             }
             applyUseLedgerToVisibleWorks(previous.useLedger)
             historyErrorMessage = "Use could not be saved. Your previous selection was restored."
+        }
+    }
+
+    private func clearAllUse(expectedHistoryID historyID: UUID) async {
+        guard currentHistoryID == historyID,
+              let previous = currentHistoryRecord,
+              !previous.useLedger.papers.isEmpty else { return }
+        useMutationRevision &+= 1
+        let revision = useMutationRevision
+        let context = captureHistoryMutationContext()
+        var optimistic = previous
+        optimistic.useLedger.removeAll()
+        currentHistoryRecord = optimistic
+        applyUseLedgerToVisibleWorks(optimistic.useLedger)
+        currentEvidenceTable = nil
+        currentFieldScanReport = nil
+        do {
+            let record = try await historyStore.clearUse(historyID: historyID)
+            guard revision == useMutationRevision,
+                  isCurrentHistoryMutationContext(context) else { return }
+            let index = try await historyStore.loadIndex()
+            guard revision == useMutationRevision,
+                  isCurrentHistoryMutationContext(context) else { return }
+            currentHistoryRecord = record
+            publishUseHistorySummaries(index.summaries)
+            applyUseLedgerToVisibleWorks(record.useLedger)
+            historyErrorMessage = nil
+        } catch {
+            guard revision == useMutationRevision,
+                  isCurrentHistoryMutationContext(context) else { return }
+            currentHistoryRecord = previous
+            applyUseLedgerToVisibleWorks(previous.useLedger)
+            historyErrorMessage = "Use selections could not be cleared. Your previous selections were restored."
         }
     }
 

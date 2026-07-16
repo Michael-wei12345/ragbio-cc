@@ -94,6 +94,10 @@ struct UseLedger: Codable, Equatable {
         papers.removeAll { $0.identity.matches(identity) }
     }
 
+    mutating func removeAll() {
+        papers.removeAll()
+    }
+
     func contains(_ work: Work) -> Bool {
         let identity = PaperIdentity(work: work)
         return papers.contains { $0.identity.matches(identity) }
