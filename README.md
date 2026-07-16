@@ -33,6 +33,16 @@ open dist/RagBio.app
 
 ## Review Engine integration spike（开发者）
 
+RagBio 的搜索侧栏现在提供 `Generate Review`。它会冻结当前 Search History 中全部 `Use` 论文的 URL 清单，显示确认页，然后通过本机 Codex SDK 和用户已登录的 ChatGPT/Codex 额度执行内置 SR/MA workflow。任务、manifest、中间目录和最终文件持久化在：
+
+```text
+~/Library/Application Support/RagBio/Reviews/
+```
+
+Review Workspace 支持阶段进度、暂停、同一 Codex thread 恢复、失败重试，以及完成后的 `Open Excel`、`Open Word` 和 `Show in Finder`。Review Engine 仅处理固定 manifest 中的 URL，不额外添加论文；未记录的注册、完整检索、双人筛选、PRISMA、偏倚和 GRADE 信息不会被假定为已完成。
+
+下方 Settings 中的 `Review Engine Preview` 仍是开发者连接探针，用来单独排查登录和本地 runtime，不会生成正式 systematic review。
+
 当前分支包含一个内部连接探针，用来验证 RagBio 是否能通过本机 Codex SDK 复用用户的 ChatGPT/Codex 登录、流式显示阶段、暂停/恢复任务，并打开生成的 Excel 和 Word 文件。它只验证底层连接，不是面向用户的 Systematic Review 功能，也不会读取或复制 `~/.codex/auth.json`。
 
 安装依赖并运行 helper 测试：

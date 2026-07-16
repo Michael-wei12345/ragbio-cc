@@ -2,10 +2,21 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import {
+  buildReviewPrompt,
   categorizeFailure,
   collectMappedEvents,
   sanitizedCodexEnvironment,
 } from "../src/codex-runner.js";
+
+test("production review prompt freezes the manifest boundary and required outputs", () => {
+  const prompt = buildReviewPrompt("/tmp/review-job");
+  assert.match(prompt, /review-manifest\.json/);
+  assert.match(prompt, /Process every paper whose disposition is "included"/);
+  assert.match(prompt, /Do not add literature beyond those supplied URLs/);
+  assert.match(prompt, /review-data\.json/);
+  assert.match(prompt, /Do not create or format Excel or Word files yourself/);
+  assert.match(prompt, /Never fabricate/);
+});
 
 async function* asyncGenerator(events: ThreadEvent[]): AsyncGenerator<ThreadEvent> {
   for (const event of events) {

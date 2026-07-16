@@ -36,6 +36,35 @@ test("parses a probe resume command", () => {
   );
 });
 
+test("parses production review commands", () => {
+  assert.deepEqual(
+    parseCommand(JSON.stringify({
+      type: "review.start",
+      requestId: "review-1",
+      workingDirectory: "/tmp/review",
+    })),
+    {
+      type: "review.start",
+      requestId: "review-1",
+      workingDirectory: "/tmp/review",
+    },
+  );
+  assert.deepEqual(
+    parseCommand(JSON.stringify({
+      type: "review.resume",
+      requestId: "review-2",
+      threadId: "thread-1",
+      workingDirectory: "/tmp/review",
+    })),
+    {
+      type: "review.resume",
+      requestId: "review-2",
+      threadId: "thread-1",
+      workingDirectory: "/tmp/review",
+    },
+  );
+});
+
 test("rejects unknown command fields", () => {
   assert.throws(() => parseCommand(JSON.stringify({
     type: "probe.pause",

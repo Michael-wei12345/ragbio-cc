@@ -58,30 +58,33 @@ final class ReviewJobCoordinator: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                await fail(jobID: manifest.jobID, message: error.localizedDescription)
+                await fail(jobID: manifest.jobID, error: error)
             }
         }
     }
 
     func pause() {
         guard let job = presentedJob, job.status == .running else { return }
-        task?.cancel()
-        task = nil
         Task { [weak self] in
             guard let self else { return }
             do {
-                presentedJob = try await store.update(
+                try await helperClient.pauseReview(requestID: job.id.uuidString)
+            } catch {
+                task?.cancel()
+                task = nil
+                presentedJob = try? await store.update(
                     id: job.id,
                     status: .paused,
-                    detail: "Paused. Resume when you are ready."
+                    detail: "Paused locally. Resume when you are ready."
                 )
                 await refreshJobs()
-            } catch { }
+            }
         }
     }
 
     func resume() {
-        guard let job = presentedJob, job.status == .paused else { return }
+        guard let job = presentedJob,
+              [.paused, .blocked, .failed].contains(job.status) else { return }
         task?.cancel()
         task = Task { [weak self] in
             guard let self else { return }
@@ -96,7 +99,7 @@ final class ReviewJobCoordinator: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                await fail(jobID: job.id, message: error.localizedDescription)
+                await fail(jobID: job.id, error: error)
             }
         }
     }
@@ -159,34 +162,29 @@ final class ReviewJobCoordinator: ObservableObject {
         let manifest = try await store.manifest(jobID: jobID)
         var job = try await store.job(id: jobID)
         let papers = manifest.includedPapers
-        let startIndex = min(job.completedPaperCount, papers.count)
-
-        for index in startIndex..<papers.count {
-            try Task.checkCancellation()
-            let paper = papers[index]
-            let stage: ReviewJobStage = index < papers.count / 3
-                ? .collecting
-                : (index < papers.count * 2 / 3 ? .extracting : .screening)
-            job = try await store.update(
-                id: jobID,
-                status: .running,
-                stage: stage,
-                detail: paper.title,
-                completedPaperCount: index
-            )
-            presentedJob = job
-            try await Task.sleep(for: .milliseconds(110))
-            job = try await store.update(id: jobID, completedPaperCount: index + 1)
-            presentedJob = job
-        }
-
         let workingDirectory = try await store.workingDirectory(jobID: jobID)
+        try writeEngineManifest(manifest, to: workingDirectory)
         let requestID = jobID.uuidString
         var generatedArtifacts: ReviewProbeArtifacts?
-        for try await event in helperClient.events(for: .fixtureStart(
-            requestID: requestID,
-            workingDirectory: workingDirectory
-        )) {
+        var wasPaused = false
+        let command: ReviewHelperCommand
+        if let threadID = job.helperThreadID {
+            command = .reviewResume(
+                requestID: requestID,
+                threadID: threadID,
+                workingDirectory: workingDirectory
+            )
+        } else {
+            command = .reviewStart(requestID: requestID, workingDirectory: workingDirectory)
+        }
+        job = try await store.update(
+            id: jobID,
+            status: .running,
+            stage: .collecting,
+            detail: "Review Engine is reading the selected paper sources"
+        )
+        presentedJob = job
+        for try await event in helperClient.events(for: command) {
             try Task.checkCancellation()
             switch event {
             case let .started(_, threadID):
@@ -209,14 +207,29 @@ final class ReviewJobCoordinator: ObservableObject {
                     manuscriptURL: manuscriptURL
                 )
             case let .failed(_, category, message):
-                throw ReviewJobRunError.helper("\(category.rawValue): \(message)")
+                throw ReviewJobRunError.helper(category: category, message: message)
+            case let .paused(_, threadID):
+                wasPaused = true
+                job = try await store.update(
+                    id: jobID,
+                    status: .paused,
+                    detail: "Paused. Resume when you are ready.",
+                    helperThreadID: threadID
+                )
             default:
                 break
             }
             presentedJob = job
         }
+        if wasPaused {
+            await refreshJobs()
+            return
+        }
         guard let generatedArtifacts else {
-            throw ReviewJobRunError.helper("The Review Engine finished without deliverables.")
+            throw ReviewJobRunError.helper(
+                category: .runtime,
+                message: "The Review Engine finished without deliverables."
+            )
         }
         let artifacts = try await installArtifacts(generatedArtifacts, jobID: jobID)
         job = try await store.update(
@@ -232,6 +245,17 @@ final class ReviewJobCoordinator: ObservableObject {
         )
         presentedJob = job
         await refreshJobs()
+    }
+
+    private func writeEngineManifest(
+        _ manifest: ReviewInputManifest,
+        to workingDirectory: URL
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let url = workingDirectory.appendingPathComponent("review-manifest.json")
+        try encoder.encode(manifest).write(to: url, options: .atomic)
     }
 
     private func installArtifacts(
@@ -256,10 +280,21 @@ final class ReviewJobCoordinator: ObservableObject {
         try FileManager.default.copyItem(at: source, to: destination)
     }
 
-    private func fail(jobID: UUID, message: String) async {
+    private func fail(jobID: UUID, error: Error) async {
+        let status: ReviewJobStatus
+        let message: String
+        if case let ReviewJobRunError.helper(category, safeMessage) = error {
+            status = [.authentication, .allowance, .network].contains(category)
+                ? .blocked
+                : .failed
+            message = safeMessage
+        } else {
+            status = .failed
+            message = error.localizedDescription
+        }
         if let job = try? await store.update(
             id: jobID,
-            status: .failed,
+            status: status,
             detail: "Review generation stopped.",
             blockMessage: message
         ) {
@@ -271,7 +306,7 @@ final class ReviewJobCoordinator: ObservableObject {
     private func mapStage(_ value: String) -> ReviewJobStage {
         switch value {
         case "extract": .extracting
-        case "workbook": .workbook
+        case "generate", "workbook": .workbook
         case "manuscript": .manuscript
         case "verify": .verifying
         default: .synthesizing
@@ -285,11 +320,11 @@ final class ReviewJobCoordinator: ObservableObject {
 }
 
 private enum ReviewJobRunError: Error, LocalizedError {
-    case helper(String)
+    case helper(category: ReviewHelperFailureCategory, message: String)
 
     var errorDescription: String? {
         switch self {
-        case let .helper(message): message
+        case let .helper(_, message): message
         }
     }
 }

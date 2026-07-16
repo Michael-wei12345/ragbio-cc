@@ -89,6 +89,13 @@ final class ReviewHelperClient: @unchecked Sendable {
         try process.write(ReviewHelperCommand.pause(requestID: requestID).jsonLine())
     }
 
+    func pauseReview(requestID: String) async throws {
+        guard let process = lock.withLock({ activeProcess }) else {
+            throw ReviewHelperClientError.noActiveProcess
+        }
+        try process.write(ReviewHelperCommand.reviewPause(requestID: requestID).jsonLine())
+    }
+
     private static func decodeAvailableEvents(
         from buffer: inout Data
     ) throws -> [ReviewHelperEvent] {

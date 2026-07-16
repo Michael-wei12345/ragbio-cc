@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { getAuthStatus, startBrowserLogin } from "./codex-auth.js";
-import { runLiveProbe } from "./codex-runner.js";
+import { runLiveProbe, runReview } from "./codex-runner.js";
 import { createFixtureArtifacts } from "./fixture-artifacts.js";
 import {
   encodeEvent,
@@ -83,11 +83,19 @@ interface LiveSession {
   paused: boolean;
 }
 
+interface ReviewSession {
+  requestId: string;
+  threadId?: string;
+  workingDirectory: string;
+  paused: boolean;
+}
+
 class HelperController {
   private activeTask: Promise<void> | undefined;
   private activeAbortController: AbortController | undefined;
   private fixtureSession: FixtureSession | undefined;
   private liveSession: LiveSession | undefined;
+  private reviewSession: ReviewSession | undefined;
 
   constructor(private readonly emit: EventEmitter) {}
 
@@ -154,6 +162,21 @@ class HelperController {
       return;
     }
 
+    if (command.type === "review.start") {
+      if (this.activeTask !== undefined) {
+        this.fail(command.requestId, "A review is already running.");
+        return;
+      }
+      const session: ReviewSession = {
+        requestId: command.requestId,
+        workingDirectory: command.workingDirectory,
+        paused: false,
+      };
+      this.reviewSession = session;
+      this.launchReview(session, false);
+      return;
+    }
+
     if (command.type === "probe.pause") {
       if (this.activeTask === undefined) {
         this.fail(command.requestId, "No review probe is running.");
@@ -167,6 +190,16 @@ class HelperController {
       } else {
         this.fail(command.requestId, "No review probe is running.");
       }
+      return;
+    }
+
+    if (command.type === "review.pause") {
+      if (this.activeTask === undefined || this.reviewSession === undefined) {
+        this.fail(command.requestId, "No review is running.");
+        return;
+      }
+      this.reviewSession.paused = true;
+      this.activeAbortController?.abort();
       return;
     }
 
@@ -204,6 +237,33 @@ class HelperController {
         live.workingDirectory = command.workingDirectory;
         live.paused = false;
         this.launchLive(live, true);
+      };
+      this.afterActiveTask(resume);
+      return;
+    }
+
+    if (command.type === "review.resume") {
+      const existing = this.reviewSession;
+      const review = existing?.threadId === command.threadId
+        ? existing
+        : existing === undefined
+          ? {
+              requestId: command.requestId,
+              threadId: command.threadId,
+              workingDirectory: command.workingDirectory,
+              paused: true,
+            }
+          : undefined;
+      if (review === undefined || (!review.paused && this.activeTask !== undefined)) {
+        this.fail(command.requestId, "The review cannot be resumed.");
+        return;
+      }
+      this.reviewSession = review;
+      const resume = () => {
+        review.requestId = command.requestId;
+        review.workingDirectory = command.workingDirectory;
+        review.paused = false;
+        this.launchReview(review, true);
       };
       this.afterActiveTask(resume);
       return;
@@ -283,6 +343,53 @@ class HelperController {
       } else {
         this.fail(session.requestId, "The live review probe ended unexpectedly.");
         this.liveSession = undefined;
+      }
+    }).finally(() => {
+      this.activeAbortController = undefined;
+      this.activeTask = undefined;
+    });
+  }
+
+  private launchReview(session: ReviewSession, resume: boolean): void {
+    const abortController = new AbortController();
+    this.activeAbortController = abortController;
+    let terminalEvent = false;
+    const emit: EventEmitter = (event) => {
+      if (event.type === "probe.started") {
+        session.threadId = event.threadId;
+      }
+      if (event.type === "probe.completed" || event.type === "probe.failed") {
+        terminalEvent = true;
+      }
+      this.emit(event);
+    };
+
+    this.activeTask = runReview(
+      session.requestId,
+      session.workingDirectory,
+      resume ? session.threadId : undefined,
+      abortController.signal,
+      emit,
+    ).then((threadId) => {
+      if (threadId !== undefined) {
+        session.threadId = threadId;
+      }
+      if (session.paused) {
+        if (session.threadId === undefined) {
+          this.fail(session.requestId, "Codex paused before creating a resumable review thread.");
+          this.reviewSession = undefined;
+        } else {
+          this.emit({
+            type: "probe.paused",
+            requestId: session.requestId,
+            threadId: session.threadId,
+          });
+        }
+      } else if (terminalEvent) {
+        this.reviewSession = undefined;
+      } else {
+        this.fail(session.requestId, "The review ended unexpectedly.");
+        this.reviewSession = undefined;
       }
     }).finally(() => {
       this.activeAbortController = undefined;

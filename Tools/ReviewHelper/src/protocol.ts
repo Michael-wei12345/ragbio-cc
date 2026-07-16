@@ -15,6 +15,18 @@ export type HelperCommand =
       requestId: string;
       threadId: string;
       workingDirectory: string;
+    }
+  | {
+      type: "review.start";
+      requestId: string;
+      workingDirectory: string;
+    }
+  | { type: "review.pause"; requestId: string }
+  | {
+      type: "review.resume";
+      requestId: string;
+      threadId: string;
+      workingDirectory: string;
     };
 
 export type HelperEvent =
@@ -107,6 +119,33 @@ export function parseCommand(line: string): HelperCommand {
         return { type: value.type, requestId: requireString(value, "requestId") };
       }
       case "probe.resume": {
+        if (!hasExactKeys(value, ["type", "requestId", "threadId", "workingDirectory"])) {
+          return invalidCommand();
+        }
+        return {
+          type: value.type,
+          requestId: requireString(value, "requestId"),
+          threadId: requireString(value, "threadId"),
+          workingDirectory: requireString(value, "workingDirectory"),
+        };
+      }
+      case "review.start": {
+        if (!hasExactKeys(value, ["type", "requestId", "workingDirectory"])) {
+          return invalidCommand();
+        }
+        return {
+          type: value.type,
+          requestId: requireString(value, "requestId"),
+          workingDirectory: requireString(value, "workingDirectory"),
+        };
+      }
+      case "review.pause": {
+        if (!hasExactKeys(value, ["type", "requestId"])) {
+          return invalidCommand();
+        }
+        return { type: value.type, requestId: requireString(value, "requestId") };
+      }
+      case "review.resume": {
         if (!hasExactKeys(value, ["type", "requestId", "threadId", "workingDirectory"])) {
           return invalidCommand();
         }

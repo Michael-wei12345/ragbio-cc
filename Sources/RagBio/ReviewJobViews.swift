@@ -31,6 +31,13 @@ struct ReviewJobConfirmationSheet: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
+            Label(
+                "This review uses your signed-in Codex allowance.",
+                systemImage: "person.crop.circle.badge.checkmark"
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+
             HStack {
                 Spacer()
                 Button("Cancel") { coordinator.dismissConfirmation() }
@@ -114,7 +121,7 @@ struct ReviewWorkspaceView: View {
 
                         actionBar(job)
 
-                        Text("Integration preview: the persistent job flow is real, while this foundation build uses deterministic sample Excel and Word content. It does not consume Codex allowance.")
+                        Text("The Review Engine uses your signed-in Codex allowance. Results are generated only from the fixed Use manifest and should be reviewed before publication.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -131,14 +138,17 @@ struct ReviewWorkspaceView: View {
             HStack {
                 Text(job.stage.title).font(.headline)
                 Spacer()
-                Text("\(job.completedPaperCount)/\(job.totalPaperCount)")
+                Text(job.status == .completed
+                     ? "\(job.completedPaperCount)/\(job.totalPaperCount)"
+                     : "\(job.totalPaperCount) selected sources")
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            ProgressView(
-                value: Double(job.completedPaperCount),
-                total: Double(max(1, job.totalPaperCount))
-            )
+            if job.status == .completed {
+                ProgressView(value: 1, total: 1)
+            } else {
+                ProgressView()
+            }
             Text(job.stageDetail)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -180,6 +190,13 @@ struct ReviewWorkspaceView: View {
                 Button("Resume", systemImage: "play.fill") { coordinator.resume() }
                     .buttonStyle(.borderedProminent)
                 Button("Cancel", role: .destructive) { coordinator.cancel() }
+            } else if job.status == .blocked {
+                Button("Retry", systemImage: "arrow.clockwise") { coordinator.resume() }
+                    .buttonStyle(.borderedProminent)
+                Button("Cancel", role: .destructive) { coordinator.cancel() }
+            } else if job.status == .failed {
+                Button("Retry", systemImage: "arrow.clockwise") { coordinator.resume() }
+                    .buttonStyle(.borderedProminent)
             }
         }
     }

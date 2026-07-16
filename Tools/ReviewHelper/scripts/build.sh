@@ -12,6 +12,6 @@ npm run build
 
 rm -rf "$destination"
 mkdir -p "$destination"
-cp -R dist package.json package-lock.json "$destination/"
+cp -R dist workflow package.json package-lock.json "$destination/"
 cd "$destination"
 npm ci --omit=dev --ignore-scripts

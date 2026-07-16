@@ -21,14 +21,19 @@ enum ReviewHelperCommand: Encodable, Equatable, Sendable {
     case liveStart(requestID: String, workingDirectory: URL)
     case pause(requestID: String)
     case resume(requestID: String, threadID: String, workingDirectory: URL)
+    case reviewStart(requestID: String, workingDirectory: URL)
+    case reviewPause(requestID: String)
+    case reviewResume(requestID: String, threadID: String, workingDirectory: URL)
 
     var requestID: String {
         switch self {
-        case let .authStatus(requestID), let .authLogin(requestID), let .pause(requestID):
+        case let .authStatus(requestID), let .authLogin(requestID), let .pause(requestID),
+             let .reviewPause(requestID):
             requestID
-        case let .fixtureStart(requestID, _), let .liveStart(requestID, _):
+        case let .fixtureStart(requestID, _), let .liveStart(requestID, _),
+             let .reviewStart(requestID, _):
             requestID
-        case let .resume(requestID, _, _):
+        case let .resume(requestID, _, _), let .reviewResume(requestID, _, _):
             requestID
         }
     }
@@ -57,6 +62,15 @@ enum ReviewHelperCommand: Encodable, Equatable, Sendable {
             try values.encode("probe.pause", forKey: .type)
         case let .resume(_, threadID, workingDirectory):
             try values.encode("probe.resume", forKey: .type)
+            try values.encode(threadID, forKey: .threadId)
+            try values.encode(workingDirectory.path, forKey: .workingDirectory)
+        case let .reviewStart(_, workingDirectory):
+            try values.encode("review.start", forKey: .type)
+            try values.encode(workingDirectory.path, forKey: .workingDirectory)
+        case .reviewPause:
+            try values.encode("review.pause", forKey: .type)
+        case let .reviewResume(_, threadID, workingDirectory):
+            try values.encode("review.resume", forKey: .type)
             try values.encode(threadID, forKey: .threadId)
             try values.encode(workingDirectory.path, forKey: .workingDirectory)
         }

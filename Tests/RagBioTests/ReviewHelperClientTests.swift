@@ -114,6 +114,23 @@ import Testing
         task.cancel()
         _ = try? await task.value
     }
+
+    @Test func productionReviewCommandUsesThePrivateReviewProtocol() throws {
+        let directory = URL(fileURLWithPath: "/tmp/review")
+        let start = try ReviewHelperCommand.reviewStart(
+            requestID: "r1",
+            workingDirectory: directory
+        ).jsonLine()
+        let resume = try ReviewHelperCommand.reviewResume(
+            requestID: "r2",
+            threadID: "t1",
+            workingDirectory: directory
+        ).jsonLine()
+
+        #expect(String(decoding: start, as: UTF8.self).contains(#""type":"review.start""#))
+        #expect(String(decoding: resume, as: UTF8.self).contains(#""type":"review.resume""#))
+        #expect(String(decoding: resume, as: UTF8.self).contains(#""threadId":"t1""#))
+    }
 }
 
 private func collect(
