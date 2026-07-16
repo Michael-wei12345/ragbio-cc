@@ -1,5 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
+import { getAuthStatus, startBrowserLogin } from "./codex-auth.js";
+import { runLiveProbe } from "./codex-runner.js";
 import { createFixtureArtifacts } from "./fixture-artifacts.js";
 import {
   encodeEvent,
@@ -74,13 +76,52 @@ interface FixtureSession {
   paused: boolean;
 }
 
+interface LiveSession {
+  requestId: string;
+  threadId?: string;
+  workingDirectory: string;
+  paused: boolean;
+}
+
 class HelperController {
   private activeTask: Promise<void> | undefined;
+  private activeAbortController: AbortController | undefined;
   private fixtureSession: FixtureSession | undefined;
+  private liveSession: LiveSession | undefined;
 
   constructor(private readonly emit: EventEmitter) {}
 
   handle(command: HelperCommand): void {
+    if (command.type === "auth.status") {
+      void getAuthStatus().then((method) => {
+        this.emit({ type: "auth.status", requestId: command.requestId, method });
+      }).catch(() => {
+        this.emit({
+          type: "probe.failed",
+          requestId: command.requestId,
+          category: "runtime",
+          message: "The local Codex runtime could not report sign-in status.",
+        });
+      });
+      return;
+    }
+
+    if (command.type === "auth.login") {
+      void startBrowserLogin(command.requestId, this.emit).then((method) => {
+        if (method !== "chatgpt") {
+          this.emit({ type: "auth.status", requestId: command.requestId, method });
+        }
+      }).catch(() => {
+        this.emit({
+          type: "probe.failed",
+          requestId: command.requestId,
+          category: "authentication",
+          message: "ChatGPT sign-in did not complete.",
+        });
+      });
+      return;
+    }
+
     if (command.type === "probe.start" && command.mode === "fixture") {
       if (this.activeTask !== undefined) {
         this.fail(command.requestId, "A review probe is already running.");
@@ -98,32 +139,73 @@ class HelperController {
       return;
     }
 
+    if (command.type === "probe.start" && command.mode === "live") {
+      if (this.activeTask !== undefined) {
+        this.fail(command.requestId, "A review probe is already running.");
+        return;
+      }
+      const session: LiveSession = {
+        requestId: command.requestId,
+        workingDirectory: command.workingDirectory,
+        paused: false,
+      };
+      this.liveSession = session;
+      this.launchLive(session, false);
+      return;
+    }
+
     if (command.type === "probe.pause") {
-      if (this.activeTask === undefined || this.fixtureSession === undefined) {
+      if (this.activeTask === undefined) {
         this.fail(command.requestId, "No review probe is running.");
         return;
       }
-      this.fixtureSession.paused = true;
+      if (this.fixtureSession !== undefined) {
+        this.fixtureSession.paused = true;
+      } else if (this.liveSession !== undefined) {
+        this.liveSession.paused = true;
+        this.activeAbortController?.abort();
+      } else {
+        this.fail(command.requestId, "No review probe is running.");
+      }
       return;
     }
 
     if (command.type === "probe.resume") {
-      const session = this.fixtureSession;
-      if (session === undefined || !session.paused || session.threadId !== command.threadId) {
+      const fixture = this.fixtureSession;
+      if (fixture !== undefined && fixture.paused && fixture.threadId === command.threadId) {
+        const resume = () => {
+          fixture.requestId = command.requestId;
+          fixture.workingDirectory = command.workingDirectory;
+          fixture.paused = false;
+          this.launchFixture(fixture, false);
+        };
+        this.afterActiveTask(resume);
+        return;
+      }
+
+      const existingLive = this.liveSession;
+      const live = existingLive?.threadId === command.threadId
+        ? existingLive
+        : existingLive === undefined && !command.threadId.startsWith("fixture-")
+          ? {
+              requestId: command.requestId,
+              threadId: command.threadId,
+              workingDirectory: command.workingDirectory,
+              paused: true,
+            }
+          : undefined;
+      if (live === undefined || (!live.paused && this.activeTask !== undefined)) {
         this.fail(command.requestId, "The review probe cannot be resumed.");
         return;
       }
+      this.liveSession = live;
       const resume = () => {
-        session.requestId = command.requestId;
-        session.workingDirectory = command.workingDirectory;
-        session.paused = false;
-        this.launchFixture(session, false);
+        live.requestId = command.requestId;
+        live.workingDirectory = command.workingDirectory;
+        live.paused = false;
+        this.launchLive(live, true);
       };
-      if (this.activeTask === undefined) {
-        resume();
-      } else {
-        void this.activeTask.finally(() => setTimeout(resume, 0));
-      }
+      this.afterActiveTask(resume);
       return;
     }
 
@@ -159,6 +241,61 @@ class HelperController {
     }).finally(() => {
       this.activeTask = undefined;
     });
+  }
+
+  private launchLive(session: LiveSession, resume: boolean): void {
+    const abortController = new AbortController();
+    this.activeAbortController = abortController;
+    let terminalEvent = false;
+    const emit: EventEmitter = (event) => {
+      if (event.type === "probe.started") {
+        session.threadId = event.threadId;
+      }
+      if (event.type === "probe.completed" || event.type === "probe.failed") {
+        terminalEvent = true;
+      }
+      this.emit(event);
+    };
+
+    this.activeTask = runLiveProbe(
+      session.requestId,
+      session.workingDirectory,
+      resume ? session.threadId : undefined,
+      abortController.signal,
+      emit,
+    ).then((threadId) => {
+      if (threadId !== undefined) {
+        session.threadId = threadId;
+      }
+      if (session.paused) {
+        if (session.threadId === undefined) {
+          this.fail(session.requestId, "Codex paused before creating a resumable thread.");
+          this.liveSession = undefined;
+        } else {
+          this.emit({
+            type: "probe.paused",
+            requestId: session.requestId,
+            threadId: session.threadId,
+          });
+        }
+      } else if (terminalEvent) {
+        this.liveSession = undefined;
+      } else {
+        this.fail(session.requestId, "The live review probe ended unexpectedly.");
+        this.liveSession = undefined;
+      }
+    }).finally(() => {
+      this.activeAbortController = undefined;
+      this.activeTask = undefined;
+    });
+  }
+
+  private afterActiveTask(action: () => void): void {
+    if (this.activeTask === undefined) {
+      action();
+    } else {
+      void this.activeTask.finally(() => setTimeout(action, 0));
+    }
   }
 
   private fail(requestId: string, message: string): void {
