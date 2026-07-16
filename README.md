@@ -31,6 +31,48 @@ chmod +x scripts/build-app.sh
 open dist/RagBio.app
 ```
 
+## Review Engine integration spike（开发者）
+
+当前分支包含一个内部连接探针，用来验证 RagBio 是否能通过本机 Codex SDK 复用用户的 ChatGPT/Codex 登录、流式显示阶段、暂停/恢复任务，并打开生成的 Excel 和 Word 文件。它只验证底层连接，不是面向用户的 Systematic Review 功能，也不会读取或复制 `~/.codex/auth.json`。
+
+安装依赖并运行 helper 测试：
+
+```bash
+cd Tools/ReviewHelper
+npm ci
+npm test
+npm run build
+cd ../..
+```
+
+运行完全离线的 fixture：
+
+```bash
+printf '%s\n' \
+  '{"type":"probe.start","requestId":"readme-fixture","mode":"fixture","workingDirectory":"/tmp/ragbio-review-probe"}' \
+  | node Tools/ReviewHelper/dist/main.js
+```
+
+以开发模式启动 RagBio，并在 Settings 中打开 `Review Engine Preview`：
+
+```bash
+swift build
+RAGBIO_REVIEW_HELPER_NODE="$(command -v node)" \
+RAGBIO_REVIEW_HELPER_SCRIPT="$PWD/Tools/ReviewHelper/dist/main.js" \
+"$(swift build --show-bin-path)/RagBio"
+```
+
+组装包含 Node、helper 和 pinned arm64 Codex runtime 的本地测试 App 时，应传入可独立分发的官方 Node arm64 可执行文件；不要使用依赖 `/opt/homebrew` 动态库的 Homebrew Node：
+
+```bash
+RAGBIO_REVIEW_NODE_BINARY=/absolute/path/to/official-node-arm64/bin/node \
+  Tools/ReviewHelper/scripts/assemble-spike-app.sh
+Tools/ReviewHelper/scripts/inspect-runtime.sh
+open .build/review-spike/RagBio.app
+```
+
+fixture 文件写入命令指定的 working directory；开发探针和组装 App 均写在 `.build/` 或临时目录。删除这些探针输出不会删除 Search History、`Use` 记录或 FullText 缓存。完整的实测结论见 [Codex Review Integration Spike Results](docs/review-engine/codex-sdk-spike-results.md)。
+
 ## AI 搜索
 
 在搜索栏中可以直接描述研究目标、时间范围、研究对象和开放获取要求。RagBio 会调用设置中启用的大模型，生成英文检索词、年份、排序和开放获取筛选，再从 OpenAlex 和 PubMed 合并最多 60 篇候选论文。
