@@ -148,17 +148,9 @@ enum SearchHistoryExportBuilder {
             }
 
         for record in eligible {
-            var seen = Set<String>()
-            var urls: [String] = []
-            for paper in record.useLedger.papers {
-                guard let value = SearchHistoryURLResolver.url(for: paper.work)?.absoluteString else {
-                    skippedPaperCount += 1
-                    continue
-                }
-                if seen.insert(value).inserted {
-                    urls.append(value)
-                }
-            }
+            let selection = SearchHistoryUseURLSelection.make(record: record)
+            let urls = selection.included.compactMap { $0.url?.absoluteString }
+            skippedPaperCount += selection.missingURLCount
             lines.append("------")
             lines.append("Query: \(record.displayQuery)")
             lines.append("Search Time: \(formatter.string(from: record.lastSuccessfulSearchAt))")
