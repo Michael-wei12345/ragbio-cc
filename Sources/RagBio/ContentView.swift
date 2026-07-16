@@ -1724,6 +1724,7 @@ private struct EvidenceFooter: View {
 }
 
 struct SettingsView: View {
+    @StateObject private var reviewProbe = ReviewConnectionProbe()
     @AppStorage(SettingsKeys.contactEmail) private var contactEmail = ""
     @AppStorage(SettingsKeys.grobidEndpoint) private var grobidEndpoint = ""
     @State private var openAlexAPIKey = CredentialStore.string(for: .openAlexAPIKey)
@@ -1775,6 +1776,8 @@ struct SettingsView: View {
                         )
                     }
                 }
+
+                ReviewEnginePreviewCard(probe: reviewProbe)
 
                 Divider()
                     .padding(.vertical, 4)
@@ -1919,6 +1922,107 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 720, height: 780)
+    }
+}
+
+private struct ReviewEnginePreviewCard: View {
+    @ObservedObject var probe: ReviewConnectionProbe
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                Label(authText, systemImage: authSystemImage)
+                    .font(.caption)
+                    .foregroundStyle(authColor)
+
+                stateDescription
+
+                HStack {
+                    if probe.authMethod == .signedOut {
+                        Button("Connect ChatGPT") { probe.connectChatGPT() }
+                    }
+
+                    switch probe.state {
+                    case .running:
+                        Button("Pause") { probe.pause() }
+                    case .paused:
+                        Button("Resume") { probe.resume() }
+                        Button("Cancel", role: .destructive) { probe.cancel() }
+                    case let .completed(artifacts):
+                        Button("Open Excel") { probe.openWorkbook() }
+                            .disabled(!FileManager.default.fileExists(
+                                atPath: artifacts.workbookURL.path
+                            ))
+                        Button("Open Word") { probe.openManuscript() }
+                            .disabled(!FileManager.default.fileExists(
+                                atPath: artifacts.manuscriptURL.path
+                            ))
+                        Button("Show in Finder") { probe.showInFinder() }
+                    default:
+                        Button("Run Fixture Probe") { probe.startFixture() }
+                        Button("Run Live Codex Probe") { probe.startLive() }
+                            .disabled(probe.authMethod != .chatgpt)
+                    }
+
+                    Spacer()
+                    Button("Refresh Sign-in") { probe.refreshAuthStatus() }
+                        .buttonStyle(.borderless)
+                }
+            }
+            .padding(4)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Review Engine Preview").font(.headline)
+                Text("Connection test only — this does not generate a systematic review.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear { probe.refreshAuthStatus() }
+    }
+
+    @ViewBuilder
+    private var stateDescription: some View {
+        switch probe.state {
+        case .idle:
+            Text("Ready to test the local Review Engine connection.")
+                .foregroundStyle(.secondary)
+        case let .running(stage, detail):
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(stage.capitalized).font(.caption.bold())
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        case let .paused(threadID):
+            Label("Paused · Thread \(threadID)", systemImage: "pause.circle")
+                .font(.caption)
+        case let .blocked(category, message):
+            Label("\(category.rawValue.capitalized): \(message)", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .completed:
+            Label("Connection test completed. Both files are ready.", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        }
+    }
+
+    private var authText: String {
+        switch probe.authMethod {
+        case .chatgpt: "ChatGPT connected"
+        case .apiKey: "API key login detected — subscription probe disabled"
+        case .signedOut: "ChatGPT not connected"
+        }
+    }
+
+    private var authSystemImage: String {
+        probe.authMethod == .chatgpt ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.xmark"
+    }
+
+    private var authColor: Color {
+        probe.authMethod == .chatgpt ? .green : .secondary
     }
 }
 
