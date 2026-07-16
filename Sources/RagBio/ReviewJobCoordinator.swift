@@ -4,6 +4,18 @@ import Foundation
 struct ReviewJobConfirmation: Identifiable, Equatable {
     var id: UUID { manifest.jobID }
     var manifest: ReviewInputManifest
+    var authorizationStage: ReviewAuthorizationStage = .checking
+}
+
+enum ReviewAuthorizationStage: Equatable {
+    case checking
+    case signingIn
+    case ready
+    case failed(message: String)
+
+    var isBusy: Bool {
+        self == .checking || self == .signingIn
+    }
 }
 
 @MainActor
@@ -15,6 +27,7 @@ final class ReviewJobCoordinator: ObservableObject {
     private let store: ReviewJobStore
     private let helperClient: ReviewHelperClient
     private var task: Task<Void, Never>?
+    private var authorizationTask: Task<Void, Never>?
 
     init(
         store: ReviewJobStore = ReviewJobStore(),
@@ -25,22 +38,39 @@ final class ReviewJobCoordinator: ObservableObject {
         Task { [weak self] in await self?.restore() }
     }
 
-    deinit { task?.cancel() }
+    deinit {
+        task?.cancel()
+        authorizationTask?.cancel()
+    }
 
     func prepare(record: SearchHistoryRecord) {
+        authorizationTask?.cancel()
         let jobID = UUID()
         confirmation = ReviewJobConfirmation(
             manifest: ReviewInputManifest.make(record: record, jobID: jobID)
         )
+        beginAuthorization(for: jobID)
+    }
+
+    func retryAuthorization() {
+        guard let confirmation else { return }
+        setAuthorizationStage(.checking, for: confirmation.id)
+        beginAuthorization(for: confirmation.id)
     }
 
     func dismissConfirmation() {
-        confirmation = nil
+        authorizationTask?.cancel()
+        authorizationTask = nil
+        self.confirmation = nil
     }
 
     func startConfirmedReview() {
-        guard let manifest = confirmation?.manifest else { return }
-        confirmation = nil
+        guard let confirmation,
+              confirmation.authorizationStage == .ready else { return }
+        let manifest = confirmation.manifest
+        authorizationTask?.cancel()
+        authorizationTask = nil
+        self.confirmation = nil
         task?.cancel()
         task = Task { [weak self] in
             guard let self else { return }
@@ -156,6 +186,89 @@ final class ReviewJobCoordinator: ObservableObject {
 
     private func refreshJobs() async {
         jobs = (try? await store.jobs()) ?? jobs
+    }
+
+    private func beginAuthorization(for confirmationID: UUID) {
+        authorizationTask?.cancel()
+        authorizationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let method = try await currentAuthMethod()
+                try Task.checkCancellation()
+                guard method != .chatgpt else {
+                    setAuthorizationStage(.ready, for: confirmationID)
+                    return
+                }
+
+                setAuthorizationStage(.signingIn, for: confirmationID)
+                try await signInToChatGPT()
+                try Task.checkCancellation()
+                setAuthorizationStage(.ready, for: confirmationID)
+            } catch is CancellationError {
+                return
+            } catch {
+                setAuthorizationStage(
+                    .failed(message: authorizationMessage(for: error)),
+                    for: confirmationID
+                )
+            }
+        }
+    }
+
+    private func currentAuthMethod() async throws -> ReviewHelperAuthMethod {
+        for try await event in helperClient.events(for: .authStatus(
+            requestID: UUID().uuidString
+        )) {
+            switch event {
+            case let .authStatus(_, method):
+                return method
+            case let .failed(_, category, message):
+                throw ReviewJobRunError.helper(category: category, message: message)
+            default:
+                continue
+            }
+        }
+        throw ReviewHelperClientError.processExited
+    }
+
+    private func signInToChatGPT() async throws {
+        for try await event in helperClient.events(for: .authLogin(
+            requestID: UUID().uuidString
+        )) {
+            switch event {
+            case .authLoginCompleted:
+                return
+            case .authStatus:
+                throw ReviewJobRunError.helper(
+                    category: .authentication,
+                    message: "ChatGPT sign-in did not complete."
+                )
+            case let .failed(_, category, message):
+                throw ReviewJobRunError.helper(category: category, message: message)
+            default:
+                continue
+            }
+        }
+        throw ReviewHelperClientError.processExited
+    }
+
+    private func setAuthorizationStage(
+        _ stage: ReviewAuthorizationStage,
+        for confirmationID: UUID
+    ) {
+        guard var current = confirmation, current.id == confirmationID else { return }
+        current.authorizationStage = stage
+        confirmation = current
+    }
+
+    private func authorizationMessage(for error: Error) -> String {
+        if case let ReviewJobRunError.helper(_, message) = error {
+            return message
+        }
+        if let helperError = error as? ReviewHelperClientError {
+            return helperError.description
+        }
+        return "ChatGPT sign-in could not be completed. Try again."
     }
 
     private func run(jobID: UUID) async throws {

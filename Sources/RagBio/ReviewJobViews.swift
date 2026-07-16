@@ -5,8 +5,38 @@ struct ReviewJobConfirmationSheet: View {
     @ObservedObject var coordinator: ReviewJobCoordinator
 
     private var manifest: ReviewInputManifest { confirmation.manifest }
+    private var authorizationStage: ReviewAuthorizationStage {
+        guard coordinator.confirmation?.id == confirmation.id else {
+            return confirmation.authorizationStage
+        }
+        return coordinator.confirmation?.authorizationStage ?? confirmation.authorizationStage
+    }
 
     var body: some View {
+        Group {
+            switch authorizationStage {
+            case .checking:
+                authorizationProgress(
+                    title: "Connecting Review Engine",
+                    detail: "Checking your ChatGPT sign-in…"
+                )
+            case .signingIn:
+                authorizationProgress(
+                    title: "Sign in to ChatGPT",
+                    detail: "Complete sign-in in your browser. RagBio will continue automatically."
+                )
+            case .ready:
+                confirmationContent
+            case let .failed(message):
+                authorizationFailure(message: message)
+            }
+        }
+        .padding(24)
+        .frame(width: 520)
+        .interactiveDismissDisabled(authorizationStage.isBusy)
+    }
+
+    private var confirmationContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Generate Systematic Review")
                 .font(.title2.bold())
@@ -46,8 +76,41 @@ struct ReviewJobConfirmationSheet: View {
                     .disabled(manifest.usableURLCount == 0)
             }
         }
-        .padding(24)
-        .frame(width: 520)
+    }
+
+    private func authorizationProgress(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(title)
+                .font(.title2.bold())
+            HStack(alignment: .top, spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(detail)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { coordinator.dismissConfirmation() }
+            }
+        }
+    }
+
+    private func authorizationFailure(message: String) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("ChatGPT sign-in needed")
+                .font(.title2.bold())
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("Retry will open ChatGPT sign-in in your browser and return here automatically when it finishes.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel") { coordinator.dismissConfirmation() }
+                Button("Retry Sign-in") { coordinator.retryAuthorization() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
     }
 
     private func summary(_ title: String, value: Int) -> some View {
