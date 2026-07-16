@@ -4,6 +4,17 @@ import Translation
 
 struct ContentView: View {
     @ObservedObject var store: SearchStore
+    @ObservedObject var reviewJobs: ReviewJobCoordinator
+
+    init(store: SearchStore, reviewJobs: ReviewJobCoordinator) {
+        self.store = store
+        self.reviewJobs = reviewJobs
+    }
+
+    @MainActor
+    init(store: SearchStore) {
+        self.init(store: store, reviewJobs: ReviewJobCoordinator())
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,18 +45,31 @@ struct ContentView: View {
             Divider()
 
             HSplitView {
-                SidebarView(store: store)
+                SidebarView(store: store, reviewJobs: reviewJobs)
                     .frame(minWidth: 310, idealWidth: 390, maxWidth: 460, maxHeight: .infinity)
-                DetailPane(store: store)
-                    .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+                Group {
+                    if reviewJobs.presentedJob != nil {
+                        ReviewWorkspaceView(coordinator: reviewJobs)
+                    } else {
+                        DetailPane(store: store)
+                    }
+                }
+                .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(item: $reviewJobs.confirmation) { confirmation in
+            ReviewJobConfirmationSheet(
+                confirmation: confirmation,
+                coordinator: reviewJobs
+            )
+        }
     }
 }
 
 private struct SidebarView: View {
     @ObservedObject var store: SearchStore
+    @ObservedObject var reviewJobs: ReviewJobCoordinator
 
     var body: some View {
         VStack(spacing: 0) {
@@ -153,7 +177,7 @@ private struct SidebarView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 7)
 
-            ScanDecisionFilterBar(store: store)
+            ScanDecisionFilterBar(store: store, reviewJobs: reviewJobs)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 7)
 
@@ -411,25 +435,51 @@ private struct StatusLegendItem: View {
 
 private struct ScanDecisionFilterBar: View {
     @ObservedObject var store: SearchStore
+    @ObservedObject var reviewJobs: ReviewJobCoordinator
     @State private var isExportPresented = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text("Scan")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-            Picker("Scan decision filter", selection: $store.decisionFilter) {
-                ForEach([ScanDecisionFilter.all, .candidate, .use]) { filter in
-                    Text(filter.title).tag(filter)
+        VStack(spacing: 7) {
+            HStack(spacing: 8) {
+                Text("Scan")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                Picker("Scan decision filter", selection: $store.decisionFilter) {
+                    ForEach([ScanDecisionFilter.all, .candidate, .use]) { filter in
+                        Text(filter.title).tag(filter)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
 
-            Button("Export Use URLs", systemImage: "square.and.arrow.up") {
-                isExportPresented = true
+            HStack(spacing: 8) {
+                Button("Export URLs", systemImage: "square.and.arrow.up") {
+                    isExportPresented = true
+                }
+                .font(.caption)
+
+                Button("Generate Review", systemImage: "doc.badge.gearshape") {
+                    if let record = store.currentHistoryRecord {
+                        reviewJobs.prepare(record: record)
+                    }
+                }
+                .font(.caption)
+                .buttonStyle(.borderedProminent)
+                .disabled(store.currentHistoryRecord?.useLedger.papers.isEmpty != false)
+
+                if !reviewJobs.jobs.isEmpty {
+                    Menu("Reviews") {
+                        ForEach(reviewJobs.jobs.prefix(8)) { job in
+                            Button("\(job.query) · v\(job.version)") {
+                                reviewJobs.show(job)
+                            }
+                        }
+                    }
+                    .font(.caption)
+                }
+                Spacer()
             }
-            .font(.caption)
         }
         .sheet(isPresented: $isExportPresented) {
             UseURLExportSheet(store: store, isPresented: $isExportPresented)

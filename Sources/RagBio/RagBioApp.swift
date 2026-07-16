@@ -3,10 +3,11 @@ import SwiftUI
 @main
 struct RagBioApp: App {
     @StateObject private var store = SearchStore()
+    @StateObject private var reviewJobs = ReviewJobCoordinator()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(store: store)
+            ContentView(store: store, reviewJobs: reviewJobs)
                 .frame(minWidth: 1040, minHeight: 680)
         }
         .windowStyle(.titleBar)
