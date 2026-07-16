@@ -1,4 +1,8 @@
 .DS_Store
+Tools/ReviewHelper/node_modules/
+Tools/ReviewHelper/dist/
+.build/review-helper/
+.build/review-probe/
 .build/
 .swiftpm/
 DerivedData/
