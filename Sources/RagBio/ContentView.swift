@@ -631,20 +631,11 @@ private struct ScanDecisionControl: View {
                 .help("Remove from Use")
             }
         } else {
-            HStack(spacing: 7) {
-                Button("Use") {
-                    onDecision(decision == .use ? .unreviewed : .use)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-                .tint(decision == .use ? .green : nil)
-
-                if decision == .use {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .accessibilityLabel("Selected for Use")
-                }
+            Button(decision == .use ? "Undo" : "Use") {
+                onDecision(decision == .use ? .unreviewed : .use)
             }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
             .font(.caption)
         }
     }
@@ -1712,7 +1703,10 @@ private struct ArticleSummaryView: View {
                     .foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 5) {
-                ForEach(Array(note.components(separatedBy: "\n").enumerated()), id: \.offset) { _, raw in
+                ForEach(
+                    Array(ArticleSummarySectionOrdering.reviewUseFirst(note).components(separatedBy: "\n").enumerated()),
+                    id: \.offset
+                ) { _, raw in
                     lineView(raw.trimmingCharacters(in: .whitespaces))
                 }
             }

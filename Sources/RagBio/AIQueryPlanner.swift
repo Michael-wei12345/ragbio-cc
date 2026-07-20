@@ -341,7 +341,7 @@ struct AIQueryPlanner {
         Screening verdict: <Include as primary evidence | Include as background | Maybe | Exclude> — <one short reason>
 
         Adapt the depth to the study type. If the paper is a narrative review, systematic review, or \
-        meta-analysis, or otherwise reports no primary dataset, keep sections 3–6 short: one brief line \
+        meta-analysis, or otherwise reports no primary dataset, keep sections 4–7 short: one brief line \
         each noting that primary methods/data are not applicable, instead of repeating "Not reported" \
         many times. Do the full detailed extraction only for primary studies. Length: about 250–450 \
         words for primary studies, and shorter (about 150–250 words) for reviews.
@@ -349,31 +349,30 @@ struct AIQueryPlanner {
         Use exactly this structure and keep the headers:
 
         Screening verdict: ...
-        1. One-line takeaway:
-        2. Study type and role in my review:
+        1. How I can use this paper in my review:
+        2. One-line takeaway:
+        3. Study type and role in my review:
         (Say whether it is a primary study, RCT, cohort, case-control, cross-sectional, systematic \
         review, meta-analysis, narrative review, or other; and whether it is suitable as primary \
         evidence for a systematic review, and why.)
-        3. PICO / PECO:
+        4. PICO / PECO:
         - Population:
         - Exposure / Condition:
         - Comparator:
         - Outcomes:
-        4. Methods that matter:
+        5. Methods that matter:
         - Databases / search period:
         - Inclusion criteria:
         - Sample type:
         - Bio methods:
         - Statistical methods:
-        5. Main biological findings:
+        6. Main biological findings:
         (Bullet points. For each, give the biomarker / taxa / gene / pathway, the direction \
         increased/decreased, the disease or population, and whether it was statistically significant. \
         Do not write vague statements like "gut microbiota changed".)
-        6. Limitations and confounders:
+        7. Limitations and confounders:
         (e.g. sample size, heterogeneity, diet, medication, age, sex, GI symptoms, sequencing method, \
         batch effects.)
-        7. How I can use this paper in my review:
-
         Return ONLY this JSON object: {"note":"<the full note as a single JSON string, using \\n for line breaks>"}
 
         Paper title: \(work.title)
