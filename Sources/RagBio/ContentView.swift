@@ -192,7 +192,6 @@ private struct SidebarView: View {
                             ? store.translatedTitles[work.id]
                             : nil,
                         aiScore: store.aiScores[work.id],
-                        aiReason: store.aiReasons[work.id],
                         aiEvidenceLevel: store.aiEvidenceLevels[work.id],
                         decision: store.decision(for: work)
                     ) { decision in
@@ -522,7 +521,6 @@ private struct WorkRow: View {
     let work: Work
     var translatedTitle: String? = nil
     var aiScore: Int? = nil
-    var aiReason: String? = nil
     var aiEvidenceLevel: String? = nil
     var decision: ScanDecision = .unreviewed
     var onDecision: (ScanDecision) -> Void = { _ in }
@@ -561,24 +559,18 @@ private struct WorkRow: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
-            if let aiScore, let aiReason {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 5) {
-                        Text("\(aiScore)%")
-                            .font(.caption2.bold().monospacedDigit())
-                            .foregroundStyle(aiScore >= 80 ? .green : .orange)
-                        if let aiEvidenceLevel {
-                            Text(aiEvidenceLevel)
-                                .font(.caption2.bold())
-                                .foregroundStyle(
-                                    aiEvidenceLevel.hasPrefix("全文") ? .blue : .secondary
-                                )
-                        }
+            if let aiScore {
+                HStack(spacing: 5) {
+                    Text("\(aiScore)%")
+                        .font(.caption2.bold().monospacedDigit())
+                        .foregroundStyle(aiScore >= 80 ? .green : .orange)
+                    if let aiEvidenceLevel {
+                        Text(aiEvidenceLevel)
+                            .font(.caption2.bold())
+                            .foregroundStyle(
+                                aiEvidenceLevel.hasPrefix("全文") ? .blue : .secondary
+                            )
                     }
-                    Text(aiReason)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
                 }
             }
 
