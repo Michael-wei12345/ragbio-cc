@@ -1,5 +1,19 @@
 import Foundation
 
+enum ReviewOutputLanguage: String, Codable, CaseIterable, Equatable, Identifiable, Sendable {
+    case english
+    case simplifiedChinese
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .english: "English"
+        case .simplifiedChinese: "中文"
+        }
+    }
+}
+
 enum ReviewManifestPaperDisposition: String, Codable, Equatable, Sendable {
     case included
     case duplicateURL
@@ -22,7 +36,7 @@ struct ReviewManifestPaper: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct ReviewInputManifest: Codable, Equatable, Identifiable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var id: UUID
@@ -31,7 +45,10 @@ struct ReviewInputManifest: Codable, Equatable, Identifiable, Sendable {
     var query: String
     var searchSnapshotAt: Date
     var createdAt: Date
+    var outputLanguage: ReviewOutputLanguage?
     var papers: [ReviewManifestPaper]
+
+    var resolvedOutputLanguage: ReviewOutputLanguage { outputLanguage ?? .english }
 
     var includedPapers: [ReviewManifestPaper] {
         papers.filter { $0.disposition == .included }
@@ -45,6 +62,7 @@ struct ReviewInputManifest: Codable, Equatable, Identifiable, Sendable {
         record: SearchHistoryRecord,
         jobID: UUID,
         manifestID: UUID = UUID(),
+        outputLanguage: ReviewOutputLanguage = .english,
         createdAt: Date = Date()
     ) -> ReviewInputManifest {
         let selection = SearchHistoryUseURLSelection.make(record: record)
@@ -56,6 +74,7 @@ struct ReviewInputManifest: Codable, Equatable, Identifiable, Sendable {
             query: record.displayQuery,
             searchSnapshotAt: record.lastSuccessfulSearchAt,
             createdAt: createdAt,
+            outputLanguage: outputLanguage,
             papers: selection.entries.map { entry in
                 ReviewManifestPaper(
                     order: entry.order,

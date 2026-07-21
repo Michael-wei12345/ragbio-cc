@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import ExcelJS from "exceljs";
 import { buildArtifacts } from "../workflow/scripts/build_artifacts.mjs";
+
+const run = promisify(execFile);
 
 const expectedSheets = [
   "README",
@@ -69,4 +73,25 @@ test("builds deterministic review artifacts with the full workbook contract", as
   assert.equal(audit?.getRow(3).getCell(1).value, "W2");
   assert.match(String(audit?.getRow(3).getCell(10).value), /not assessed/i);
   assert.equal(workbook.getWorksheet("R")?.getRow(2).getCell(6).value, 40);
+});
+
+test("uses Chinese fixed manuscript text when requested by the manifest", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ragbio-chinese-artifacts-"));
+  const manifestPath = join(directory, "review-manifest.json");
+  const dataPath = join(directory, "review-data.json");
+  await writeFile(manifestPath, JSON.stringify({
+    query: "测试综述",
+    outputLanguage: "simplifiedChinese",
+    papers: [],
+  }));
+  await writeFile(dataPath, JSON.stringify({ topic: "测试综述", manuscript: {} }));
+
+  const artifacts = await buildArtifacts(dataPath, manifestPath, directory);
+  const { stdout } = await run("/usr/bin/unzip", [
+    "-p", artifacts.manuscriptPath, "word/document.xml",
+  ], { encoding: "utf8" });
+
+  assert.match(stdout, /摘要/);
+  assert.match(stdout, /引言/);
+  assert.match(stdout, /仅基于用户在 RagBio 中选择的 URL/);
 });

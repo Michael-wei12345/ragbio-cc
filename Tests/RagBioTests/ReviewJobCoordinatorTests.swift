@@ -77,6 +77,15 @@ struct ReviewJobCoordinatorTests {
         #expect(factory.createdCount == 2)
     }
 
+    @Test func confirmationKeepsTheSelectedOutputLanguage() {
+        let coordinator = makeCoordinator(factory: AuthorizationProcessFactory(processes: []))
+
+        coordinator.prepare(record: makeReviewRecord())
+        coordinator.setOutputLanguage(.simplifiedChinese)
+
+        #expect(coordinator.confirmation?.manifest.resolvedOutputLanguage == .simplifiedChinese)
+    }
+
     private func makeCoordinator(
         factory: AuthorizationProcessFactory
     ) -> ReviewJobCoordinator {

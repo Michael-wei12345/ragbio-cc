@@ -26,7 +26,7 @@ Use only manifest papers whose disposition is `included`. Do not search for or a
 5. Define each estimand before deciding whether pooling is appropriate.
 6. Use RoB 2, ROBINS-I, QUADAS-2, PROBAST, or the domain-appropriate tool. Do not invent judgments unsupported by the source.
 7. Add preliminary GRADE rows for key outcomes.
-8. Write the English manuscript fields only after extracted counts reconcile with the manifest and study dispositions.
+8. Write manuscript and generated analysis text in the manifest's `outputLanguage` only after extracted counts reconcile with the manifest and study dispositions. Missing or `english` means English; `simplifiedChinese` means Simplified Chinese. Preserve paper titles, identifiers, quotations, numbers, and standardized tool names in their original form.
 9. Validate `review-data.json` as strict JSON. RagBio builds and validates the Office files deterministically after the agent turn.
 
 ## review-data.json contract

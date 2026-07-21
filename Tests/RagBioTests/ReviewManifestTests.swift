@@ -29,9 +29,24 @@ import Testing
         let export = SearchHistoryExportBuilder.make(records: [record])
 
         #expect(manifest.usableURLCount == 3)
+        #expect(manifest.resolvedOutputLanguage == .english)
         for paper in manifest.includedPapers {
             #expect(export.text.contains(paper.sourceURL!.absoluteString))
         }
+    }
+
+    @Test func manifestFreezesSelectedReviewLanguage() {
+        let manifest = ReviewInputManifest.make(
+            record: makeRecord(
+                query: "language",
+                works: [],
+                date: Date(timeIntervalSince1970: 10)
+            ),
+            jobID: UUID(),
+            outputLanguage: .simplifiedChinese
+        )
+
+        #expect(manifest.resolvedOutputLanguage == .simplifiedChinese)
     }
 
     @Test func manifestPreservesUseOrderAndRecordsDuplicateAndMissingURLs() {

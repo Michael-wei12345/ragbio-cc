@@ -10,6 +10,10 @@ enum ReviewHelperFailureCategory: String, Codable, Equatable, Sendable {
     case authentication
     case allowance
     case network
+    case sourceAccess
+    case generation
+    case outputValidation
+    case fileSave
     case runtime
     case `protocol`
 }

@@ -44,7 +44,7 @@ struct ReviewJobArtifacts: Codable, Equatable, Sendable {
 }
 
 struct ReviewJob: Codable, Equatable, Identifiable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     var schemaVersion: Int
     var id: UUID
@@ -60,6 +60,7 @@ struct ReviewJob: Codable, Equatable, Identifiable, Sendable {
     var helperThreadID: String?
     var warningMessages: [String]
     var blockMessage: String?
+    var failureCategory: ReviewHelperFailureCategory?
     var artifacts: ReviewJobArtifacts?
     var createdAt: Date
     var updatedAt: Date

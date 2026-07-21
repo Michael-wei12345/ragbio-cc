@@ -11,6 +11,15 @@ struct ReviewJobConfirmationSheet: View {
         }
         return coordinator.confirmation?.authorizationStage ?? confirmation.authorizationStage
     }
+    private var outputLanguage: Binding<ReviewOutputLanguage> {
+        Binding(
+            get: {
+                coordinator.confirmation?.manifest.resolvedOutputLanguage
+                    ?? manifest.resolvedOutputLanguage
+            },
+            set: coordinator.setOutputLanguage
+        )
+    }
 
     var body: some View {
         Group {
@@ -47,6 +56,19 @@ struct ReviewJobConfirmationSheet: View {
             VStack(alignment: .leading, spacing: 10) {
                 summary("Use papers", value: manifest.papers.count)
                 summary("URLs sent to Review Engine", value: manifest.usableURLCount)
+                Divider()
+                HStack {
+                    Text("Review language")
+                    Spacer()
+                    Picker("Review language", selection: outputLanguage) {
+                        ForEach(ReviewOutputLanguage.allCases) { language in
+                            Text(language.title).tag(language)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 190)
+                }
                 if manifest.duplicateURLCount > 0 {
                     summary("Duplicate URLs kept in manifest", value: manifest.duplicateURLCount)
                 }
@@ -168,8 +190,13 @@ struct ReviewWorkspaceView: View {
                         }
 
                         if let message = job.blockMessage {
-                            Label(message, systemImage: "exclamationmark.triangle")
-                                .foregroundStyle(.orange)
+                            VStack(alignment: .leading, spacing: 8) {
+                                Label(message, systemImage: "exclamationmark.triangle")
+                                    .foregroundStyle(.orange)
+                                Text(recoveryGuidance(job.failureCategory))
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
                                 .padding(14)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
@@ -253,14 +280,64 @@ struct ReviewWorkspaceView: View {
                 Button("Resume", systemImage: "play.fill") { coordinator.resume() }
                     .buttonStyle(.borderedProminent)
                 Button("Cancel", role: .destructive) { coordinator.cancel() }
-            } else if job.status == .blocked {
-                Button("Retry", systemImage: "arrow.clockwise") { coordinator.resume() }
+            } else if job.status == .blocked || job.status == .failed {
+                Button(recoveryButtonTitle(job.failureCategory), systemImage: "arrow.clockwise") {
+                    recover(job.failureCategory)
+                }
                     .buttonStyle(.borderedProminent)
-                Button("Cancel", role: .destructive) { coordinator.cancel() }
-            } else if job.status == .failed {
-                Button("Retry", systemImage: "arrow.clockwise") { coordinator.resume() }
-                    .buttonStyle(.borderedProminent)
+                if job.status == .blocked {
+                    Button("Cancel", role: .destructive) { coordinator.cancel() }
+                }
             }
+        }
+    }
+
+    private func recover(_ category: ReviewHelperFailureCategory?) {
+        switch category {
+        case .authentication:
+            coordinator.signInAndResume()
+        case .runtime:
+            coordinator.restartApplication()
+        default:
+            coordinator.resume()
+        }
+    }
+
+    private func recoveryButtonTitle(_ category: ReviewHelperFailureCategory?) -> String {
+        switch category {
+        case .authentication: "Sign in again"
+        case .network: "Retry connection"
+        case .sourceAccess: "Retry sources"
+        case .generation: "Retry generation"
+        case .outputValidation: "Regenerate files"
+        case .fileSave: "Retry saving"
+        case .runtime: "Restart RagBio"
+        default: "Retry"
+        }
+    }
+
+    private func recoveryGuidance(_ category: ReviewHelperFailureCategory?) -> String {
+        switch category {
+        case .authentication:
+            "Your task is saved. Sign in again, then RagBio will continue from the saved review."
+        case .allowance:
+            "Your task is saved. Retry later or check the allowance for the signed-in ChatGPT account."
+        case .network:
+            "Your task is saved. Check the internet connection, then retry."
+        case .sourceAccess:
+            "The fixed Use list is unchanged. Retry to read the unavailable sources again."
+        case .generation:
+            "Completed work is kept. Retry to continue AI generation from the saved review."
+        case .outputValidation:
+            "The source work is kept. RagBio can regenerate and validate the Excel and Word files."
+        case .fileSave:
+            "Free some disk space or check folder permissions, then retry saving the files."
+        case .runtime:
+            "Restart RagBio first. If this repeats, replace the app with the latest build; saved searches and reviews remain on this Mac."
+        case .protocol:
+            "Your task is saved. Retry to reconnect the app and its local Review Engine."
+        case nil:
+            "Your task is saved. Retry to continue from the latest saved point."
         }
     }
 

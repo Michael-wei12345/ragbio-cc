@@ -47,7 +47,7 @@ enum ScanDecisionFilter: String, Codable, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all: return "All"
-        case .candidate: return "Candidate"
+        case .candidate: return "Likely Primary"
         case .use: return "Use"
         case .maybe: return "Maybe"
         case .exclude: return "Exclude"

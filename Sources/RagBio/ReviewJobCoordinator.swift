@@ -64,6 +64,12 @@ final class ReviewJobCoordinator: ObservableObject {
         self.confirmation = nil
     }
 
+    func setOutputLanguage(_ language: ReviewOutputLanguage) {
+        guard var current = confirmation else { return }
+        current.manifest.outputLanguage = language
+        confirmation = current
+    }
+
     func startConfirmedReview() {
         guard let confirmation,
               confirmation.authorizationStage == .ready else { return }
@@ -115,10 +121,35 @@ final class ReviewJobCoordinator: ObservableObject {
     func resume() {
         guard let job = presentedJob,
               [.paused, .blocked, .failed].contains(job.status) else { return }
+        restart(job, reauthorize: false)
+    }
+
+    func signInAndResume() {
+        guard let job = presentedJob,
+              [.blocked, .failed].contains(job.status) else { return }
+        restart(job, reauthorize: true)
+    }
+
+    func restartApplication() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(
+            at: Bundle.main.bundleURL,
+            configuration: configuration
+        ) { _, error in
+            guard error == nil else { return }
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    private func restart(_ job: ReviewJob, reauthorize: Bool) {
         task?.cancel()
         task = Task { [weak self] in
             guard let self else { return }
             do {
+                if reauthorize, try await currentAuthMethod() != .chatgpt {
+                    try await signInToChatGPT()
+                }
                 presentedJob = try await store.update(
                     id: job.id,
                     status: .running,
@@ -340,8 +371,8 @@ final class ReviewJobCoordinator: ObservableObject {
         }
         guard let generatedArtifacts else {
             throw ReviewJobRunError.helper(
-                category: .runtime,
-                message: "The Review Engine finished without deliverables."
+                category: .outputValidation,
+                message: "The Review Engine finished without valid Excel and Word files."
             )
         }
         let artifacts = try await installArtifacts(generatedArtifacts, jobID: jobID)
@@ -395,25 +426,50 @@ final class ReviewJobCoordinator: ObservableObject {
 
     private func fail(jobID: UUID, error: Error) async {
         let status: ReviewJobStatus
+        let failureCategory: ReviewHelperFailureCategory
         let message: String
-        if case let ReviewJobRunError.helper(category, safeMessage) = error {
-            status = [.authentication, .allowance, .network].contains(category)
+        if case let ReviewJobRunError.helper(helperCategory, safeMessage) = error {
+            status = [.authentication, .allowance, .network, .sourceAccess]
+                .contains(helperCategory)
                 ? .blocked
                 : .failed
+            failureCategory = helperCategory
             message = safeMessage
         } else {
             status = .failed
-            message = error.localizedDescription
+            let localFailure = localFailure(for: error)
+            failureCategory = localFailure.category
+            message = localFailure.message
         }
         if let job = try? await store.update(
             id: jobID,
             status: status,
-            detail: "Review generation stopped.",
-            blockMessage: message
+            detail: "Review stopped safely. Your fixed Use list and saved progress were kept.",
+            blockMessage: message,
+            failureCategory: failureCategory
         ) {
             presentedJob = job
         }
         await refreshJobs()
+    }
+
+    private func localFailure(
+        for error: Error
+    ) -> (category: ReviewHelperFailureCategory, message: String) {
+        let value = error as NSError
+        if value.domain == NSCocoaErrorDomain, (512...1024).contains(value.code) {
+            return (
+                .fileSave,
+                "The review files could not be saved. Check disk space and folder permissions."
+            )
+        }
+        if value.domain == NSCocoaErrorDomain, value.code == NSFileNoSuchFileError {
+            return (
+                .outputValidation,
+                "The generated review files were incomplete or missing."
+            )
+        }
+        return (.runtime, "The local Review Engine could not complete the task.")
     }
 
     private func mapStage(_ value: String) -> ReviewJobStage {

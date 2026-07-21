@@ -74,6 +74,24 @@ import Testing
         #expect(try await store.job(id: created.id).status == .completed)
     }
 
+    @Test func persistsFailureCategoryAndClearsItWhenRetrying() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ReviewJobStore(root: root)
+        let created = try await store.create(manifest: manifest(query: "recover"))
+
+        _ = try await store.update(
+            id: created.id,
+            status: .failed,
+            blockMessage: "The generated review data did not pass validation.",
+            failureCategory: .outputValidation
+        )
+        #expect(try await store.job(id: created.id).failureCategory == .outputValidation)
+
+        _ = try await store.update(id: created.id, status: .running)
+        #expect(try await store.job(id: created.id).failureCategory == nil)
+    }
+
     private func manifest(query: String) -> ReviewInputManifest {
         ReviewInputManifest.make(
             record: record(query: query),

@@ -14,6 +14,8 @@ test("production review prompt freezes the manifest boundary and required output
   assert.match(prompt, /Process every paper whose disposition is "included"/);
   assert.match(prompt, /Do not add literature beyond those supplied URLs/);
   assert.match(prompt, /review-data\.json/);
+  assert.match(prompt, /outputLanguage/);
+  assert.match(prompt, /Simplified Chinese/);
   assert.match(prompt, /Do not create or format Excel or Word files yourself/);
   assert.match(prompt, /Never fabricate/);
 });
@@ -61,6 +63,10 @@ test("maps failures to conservative user categories", () => {
   assert.equal(categorizeFailure("401 login required").category, "authentication");
   assert.equal(categorizeFailure("429 rate limit exceeded").category, "allowance");
   assert.equal(categorizeFailure("network connection reset").category, "network");
+  assert.equal(categorizeFailure("403 source access denied").category, "sourceAccess");
+  assert.equal(categorizeFailure("model generation stopped").category, "generation");
+  assert.equal(categorizeFailure("invalid review-data.json schema").category, "outputValidation");
+  assert.equal(categorizeFailure("ENOSPC: no space left while writing").category, "fileSave");
   assert.deepEqual(categorizeFailure("secret internal runtime details"), {
     category: "runtime",
     message: "The local Review Engine could not complete the task.",

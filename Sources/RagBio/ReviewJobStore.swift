@@ -56,6 +56,7 @@ actor ReviewJobStore {
             helperThreadID: nil,
             warningMessages: [],
             blockMessage: nil,
+            failureCategory: nil,
             artifacts: nil,
             createdAt: now,
             updatedAt: now,
@@ -111,6 +112,7 @@ actor ReviewJobStore {
         helperThreadID: String? = nil,
         warnings: [String]? = nil,
         blockMessage: String? = nil,
+        failureCategory: ReviewHelperFailureCategory? = nil,
         artifacts: ReviewJobArtifacts? = nil,
         now: Date = Date()
     ) throws -> ReviewJob {
@@ -128,6 +130,7 @@ actor ReviewJobStore {
         if let helperThreadID { job.helperThreadID = helperThreadID }
         if let warnings { job.warningMessages = warnings }
         job.blockMessage = blockMessage
+        job.failureCategory = failureCategory
         if let artifacts { job.artifacts = artifacts }
         if job.status == .completed { job.completedAt = now }
         job.updatedAt = now

@@ -54,6 +54,10 @@ export type HelperEvent =
         | "authentication"
         | "allowance"
         | "network"
+        | "sourceAccess"
+        | "generation"
+        | "outputValidation"
+        | "fileSave"
         | "runtime"
         | "protocol";
       message: string;

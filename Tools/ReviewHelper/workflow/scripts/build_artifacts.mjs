@@ -186,18 +186,67 @@ function proseParagraphs(value, fallback) {
   return (values.length ? values : [fallback]).map((item) => paragraph(item, { spacing: { after: 180 }, alignment: AlignmentType.JUSTIFIED }));
 }
 
-function structuredAbstract(data) {
+function manuscriptCopy(manifest) {
+  if (manifest.outputLanguage === "simplifiedChinese") {
+    return {
+      titleFallback: "RagBio 用户指定来源证据综述",
+      draftNotice: "本草稿仅基于用户在 RagBio 中选择的 URL 生成；发表前必须由专家核验。",
+      headings: {
+        abstract: "摘要", introduction: "引言", methods: "方法", results: "结果",
+        discussion: "讨论", limitations: "局限性", conclusion: "结论",
+        dataAvailability: "数据可用性", references: "参考文献",
+        readiness: "附录：综述准备度检查表",
+      },
+      abstractLabels: ["背景", "目的", "方法", "结果", "结论"],
+      missingAbstract: "生成的提取结果中未报告。",
+      introductionFallback: "本综述旨在回答所陈述的研究问题，并仅分析用户提供的证据集合。",
+      evidenceBoundary: "证据来源边界：仅评估用户在 RagBio 中选择并记录于不可变输入清单的 URL，未进行额外文献检索。",
+      methodsFallback: "基于可访问的指定记录评估来源获取、研究资格、数据提取、偏倚风险和证据综合；未假定任何未记录的系统综述程序。",
+      resultsFallback: "结果仅限于随附工作簿中记录的发现。",
+      discussionFallback: "应在用户指定来源的边界内解释这些发现，并对照原始报告进行核验。",
+      limitationsFallback: "不能声称已完成全面多数据库检索、方案注册、双人独立筛选或其他未记录的系统综述标准。",
+      conclusionFallback: "不得推断超出已提取指定证据范围的结论。",
+      dataAvailabilityFallback: "结构化提取和来源审计数据见随附的 RagBio Excel 工作簿。",
+      missingReferences: "未生成完整参考文献列表；请查阅 Excel 工作簿中的 Source audit 表。",
+      description: "用户指定来源的系统综述草稿",
+    };
+  }
+  return {
+    titleFallback: "RagBio Supplied-Source Evidence Review",
+    draftNotice: "Draft generated from user-selected RagBio URLs; expert verification is required before publication.",
+    headings: {
+      abstract: "Abstract", introduction: "Introduction", methods: "Methods", results: "Results",
+      discussion: "Discussion", limitations: "Limitations", conclusion: "Conclusion",
+      dataAvailability: "Data Availability", references: "References",
+      readiness: "Appendix: Review Readiness Checklist",
+    },
+    abstractLabels: ["Background", "Objective", "Methods", "Results", "Conclusions"],
+    missingAbstract: "Not reported in the generated extraction.",
+    introductionFallback: "The supplied evidence set was reviewed to address the stated research question.",
+    evidenceBoundary: "Evidence source boundary: only URLs selected by the user in RagBio and recorded in the immutable input manifest were assessed. No additional literature search was performed.",
+    methodsFallback: "Source access, eligibility, extraction, risk of bias, and synthesis were assessed from the accessible supplied records. Undocumented systematic-review procedures were not assumed.",
+    resultsFallback: "Results are limited to findings captured in the accompanying workbook.",
+    discussionFallback: "The findings should be interpreted within the supplied-source boundary and verified against the original reports.",
+    limitationsFallback: "A comprehensive multi-database search, registered protocol, dual independent screening, and other undocumented systematic-review standards cannot be claimed.",
+    conclusionFallback: "No conclusion beyond the extracted supplied evidence should be inferred.",
+    dataAvailabilityFallback: "Structured extraction and source-audit data are provided in the accompanying RagBio Excel workbook.",
+    missingReferences: "No complete reference list was generated; consult the Source audit sheet.",
+    description: "Draft supplied-source systematic review deliverable",
+  };
+}
+
+function structuredAbstract(data, copy) {
   const abstract = asObject(data.abstract);
   const fields = [
-    ["Background", abstract.background],
-    ["Objective", abstract.objective],
-    ["Methods", abstract.methods],
-    ["Results", abstract.results],
-    ["Conclusions", abstract.conclusions],
+    [copy.abstractLabels[0], abstract.background],
+    [copy.abstractLabels[1], abstract.objective],
+    [copy.abstractLabels[2], abstract.methods],
+    [copy.abstractLabels[3], abstract.results],
+    [copy.abstractLabels[4], abstract.conclusions],
   ];
   return fields.map(([label, value]) => new Paragraph({
     spacing: { after: 100 },
-    children: [new TextRun({ text: `${label}: `, bold: true }), new TextRun(stringValue(value) || "Not reported in the generated extraction.")],
+    children: [new TextRun({ text: `${label}: `, bold: true }), new TextRun(stringValue(value) || copy.missingAbstract)],
   }));
 }
 
@@ -273,10 +322,11 @@ async function createWorkbook(data, manifest, outputPath) {
 }
 
 async function createManuscript(data, manifest, outputPath) {
+  const copy = manuscriptCopy(manifest);
   const manuscript = asObject(data.manuscript);
   const references = normalizeRows(data.references);
   const readiness = normalizeRows(data.readiness);
-  const title = stringValue(data.topic || data.title || manifest.query || "RagBio Supplied-Source Evidence Review");
+  const title = stringValue(data.topic || data.title || manifest.query || copy.titleFallback);
   const children = [
     new Paragraph({
       style: "ReviewTitle",
@@ -284,33 +334,33 @@ async function createManuscript(data, manifest, outputPath) {
       alignment: AlignmentType.CENTER,
       spacing: { after: 240 },
     }),
-    paragraph("Draft generated from user-selected RagBio URLs; expert verification is required before publication.", { alignment: AlignmentType.CENTER, spacing: { after: 300 } }),
-    heading("Abstract"),
-    ...structuredAbstract(data),
-    heading("Introduction"),
-    ...proseParagraphs(manuscript.introduction, "The supplied evidence set was reviewed to address the stated research question."),
-    heading("Methods"),
-    paragraph("Evidence source boundary: only URLs selected by the user in RagBio and recorded in the immutable input manifest were assessed. No additional literature search was performed.", { spacing: { after: 180 } }),
-    ...proseParagraphs(manuscript.methods, "Source access, eligibility, extraction, risk of bias, and synthesis were assessed from the accessible supplied records. Undocumented systematic-review procedures were not assumed."),
-    heading("Results"),
-    ...proseParagraphs(manuscript.results, "Results are limited to findings captured in the accompanying workbook."),
-    heading("Discussion"),
-    ...proseParagraphs(manuscript.discussion, "The findings should be interpreted within the supplied-source boundary and verified against the original reports."),
-    heading("Limitations", HeadingLevel.HEADING_2),
-    ...proseParagraphs(manuscript.limitations, "A comprehensive multi-database search, registered protocol, dual independent screening, and other undocumented systematic-review standards cannot be claimed."),
-    heading("Conclusion"),
-    ...proseParagraphs(manuscript.conclusion, "No conclusion beyond the extracted supplied evidence should be inferred."),
-    heading("Data Availability"),
-    paragraph(manuscript.dataAvailability || "Structured extraction and source-audit data are provided in the accompanying RagBio Excel workbook."),
-    heading("References"),
+    paragraph(copy.draftNotice, { alignment: AlignmentType.CENTER, spacing: { after: 300 } }),
+    heading(copy.headings.abstract),
+    ...structuredAbstract(data, copy),
+    heading(copy.headings.introduction),
+    ...proseParagraphs(manuscript.introduction, copy.introductionFallback),
+    heading(copy.headings.methods),
+    paragraph(copy.evidenceBoundary, { spacing: { after: 180 } }),
+    ...proseParagraphs(manuscript.methods, copy.methodsFallback),
+    heading(copy.headings.results),
+    ...proseParagraphs(manuscript.results, copy.resultsFallback),
+    heading(copy.headings.discussion),
+    ...proseParagraphs(manuscript.discussion, copy.discussionFallback),
+    heading(copy.headings.limitations, HeadingLevel.HEADING_2),
+    ...proseParagraphs(manuscript.limitations, copy.limitationsFallback),
+    heading(copy.headings.conclusion),
+    ...proseParagraphs(manuscript.conclusion, copy.conclusionFallback),
+    heading(copy.headings.dataAvailability),
+    paragraph(manuscript.dataAvailability || copy.dataAvailabilityFallback),
+    heading(copy.headings.references),
   ];
 
   if (references.length === 0) {
-    children.push(paragraph("No complete reference list was generated; consult the Source audit sheet."));
+    children.push(paragraph(copy.missingReferences));
   } else {
     references.forEach((reference, index) => children.push(paragraph(`${index + 1}. ${first(reference, ["citation", "title"], "Unspecified reference")} ${first(reference, ["doi", "url"])}`)));
   }
-  children.push(heading("Appendix: Review Readiness Checklist"));
+  children.push(heading(copy.headings.readiness));
   const requiredReadiness = [
     "Clear PICO", "Registered protocol", "Comprehensive multi-database search", "Clear eligibility criteria",
     "Dual independent screening", "PRISMA flow diagram", "Risk-of-bias assessment", "Appropriate meta-analysis",
@@ -332,7 +382,7 @@ async function createManuscript(data, manifest, outputPath) {
   const document = new Document({
     creator: "RagBio Review Engine",
     title,
-    description: "Draft supplied-source systematic review deliverable",
+    description: copy.description,
     styles: {
       default: { document: { run: { font: "Aptos", size: 22 }, paragraph: { spacing: { line: 276 } } } },
       paragraphStyles: [{
