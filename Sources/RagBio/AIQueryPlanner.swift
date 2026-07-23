@@ -180,6 +180,72 @@ struct AIQueryPlanner {
         return valid
     }
 
+    func triageCandidateBatch(
+        description: String,
+        profile: ResearchQuestionProfile?,
+        works: [Work],
+        configuration: AIProviderConfiguration
+    ) async throws -> [AICandidateTriageOutput] {
+        guard configuration.isConfigured else {
+            throw AIPlannerError.notConfigured(configuration.provider)
+        }
+        guard !works.isEmpty else { return [] }
+
+        let rows = works.enumerated().map { index, work in
+            """
+            [\(index)]
+            Title: \(work.title.prefix(300))
+            Publication types: \((work.publicationTypes ?? []).joined(separator: ", "))
+            Abstract: \(Self.abstractEvidence(work.abstractText, maxCharacters: 1_800))
+            """
+        }.joined(separator: "\n\n")
+        let profileData = try JSONEncoder().encode(profile ?? .empty)
+        let profileJSON = String(data: profileData, encoding: .utf8) ?? "{}"
+        let prompt = """
+        Perform conservative title/abstract eligibility triage for a systematic-review search. \
+        This is NOT final inclusion and NOT the final relevance ranking. Return one decision for \
+        every record. Use only the supplied metadata and abstract.
+
+        disposition must be exactly one of:
+        - likely: directly or plausibly useful primary, follow-up, subgroup, or safety evidence
+        - unclear: insufficient or ambiguous evidence; use this whenever the abstract is missing
+        - background: review, meta-analysis, guideline, consensus, protocol, registry, editorial, \
+          or other contextual/citation-source record
+        - explicit_mismatch: the supplied text clearly states a core population, exposure or \
+          intervention, outcome subject, or setting that is incompatible with the question
+
+        Unknown is never mismatch. Do not infer exclusion merely because a concept is not \
+        mentioned in the title. A study can be likely when the comparator or outcome is not \
+        fully described in the abstract. Set directness to 3 for direct target evidence, 2 for \
+        a close partial match, 1 for indirect but potentially useful evidence, and 0 for unclear \
+        or mismatch. confidence must be high, medium, or low. explicit_mismatch may use high \
+        confidence only when the conflict is stated explicitly.
+
+        Return only JSON with exactly one decision per index and no reasons:
+        {"decisions":[{"index":0,"disposition":"unclear","directness":0,"confidence":"low"}]}
+
+        Original request: \(description)
+        Question profile: \(profileJSON)
+        Records:
+        \(rows)
+        """
+        let data = try await generateJSON(
+            prompt: prompt,
+            configuration: configuration,
+            maxTokens: max(1_500, works.count * 48),
+            timeout: 45
+        )
+        let decoded = try decodeJSON(AICandidateTriageResponse.self, from: data)
+        let valid = decoded.decisions.filter {
+            works.indices.contains($0.index) && (0...3).contains($0.directness)
+        }
+        guard !valid.isEmpty,
+              Set(valid.map(\.index)).count == valid.count else {
+            throw AIPlannerError.invalidRanking
+        }
+        return valid
+    }
+
     func calibrateGlobalScores(
         description: String,
         profile: ResearchQuestionProfile?,

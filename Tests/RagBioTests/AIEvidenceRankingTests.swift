@@ -167,6 +167,54 @@ import Testing
         )
     }
 
+    @Test func expandedEvidencePoolDoesNotExpandAutomaticFullTextWork() {
+        let works = (0..<180).map {
+            makeWork(id: "W\($0)", doi: "10.1000/\($0)")
+        }
+
+        let fullText = SearchStore.fullTextPreparationCandidates(works, limit: 120)
+
+        #expect(fullText.count == 120)
+        #expect(fullText.first?.id == "W0")
+        #expect(fullText.last?.id == "W119")
+    }
+
+    @Test func candidateTriageIsConservativeAndDoesNotRequestFinalScoresOrReasons() async throws {
+        EvidenceRankingURLProtocol.reset()
+        let sessionConfiguration = URLSessionConfiguration.ephemeral
+        sessionConfiguration.protocolClasses = [EvidenceRankingURLProtocol.self]
+        let session = URLSession(configuration: sessionConfiguration)
+        defer { session.invalidateAndCancel() }
+        let configuration = AIProviderConfiguration(
+            provider: .openAI,
+            apiKey: "test-key",
+            model: "test-model",
+            baseURL: "https://example.test"
+        )
+
+        let output = try await AIQueryPlanner(session: session).triageCandidateBatch(
+            description: "Shorter versus one-year adjuvant trastuzumab",
+            profile: nil,
+            works: [
+                makeWork(
+                    title: "TRIAGE_MARKER randomized trastuzumab duration trial",
+                    abstract: "Direct comparison in early HER2-positive breast cancer."
+                )
+            ],
+            configuration: configuration
+        )
+
+        #expect(output.first?.disposition == .likely)
+        #expect(output.first?.directness == 3)
+        let prompt = try #require(
+            EvidenceRankingURLProtocol.prompts.first { $0.contains("TRIAGE_MARKER") }
+        )
+        #expect(prompt.contains("Unknown is never mismatch"))
+        #expect(prompt.contains("NOT final inclusion"))
+        #expect(!prompt.contains(#""score""#))
+        #expect(!prompt.contains(#""reason""#))
+    }
+
     @Test func globalCalibrationUsesCompactCardsAndDoesNotRequestReasons() async throws {
         EvidenceRankingURLProtocol.reset()
         let configuration = URLSessionConfiguration.ephemeral
@@ -595,7 +643,9 @@ private final class EvidenceRankingURLProtocol: URLProtocol, @unchecked Sendable
         Self.lock.unlock()
 
         let ranking: String
-        if prompt?.contains("structured evidence card") == true {
+        if prompt?.contains("conservative title/abstract eligibility triage") == true {
+            ranking = #"{"decisions":[{"index":0,"disposition":"likely","directness":3,"confidence":"high"}]}"#
+        } else if prompt?.contains("structured evidence card") == true {
             ranking = #"{"cards":[{"index":0,"population":"match","intervention_or_exposure":"match","comparator":"unclear","outcome":"unclear","context":"match","role":"primary","reports_effect_estimate":false,"reports_sample_size":true,"has_comparator_group":false,"reports_follow_up":false,"unique_contribution":false}]}"#
         } else {
             ranking = #"{"rankings":[{"index":0,"score":91,"relevant":true,"reason":"病因相关"}]}"#

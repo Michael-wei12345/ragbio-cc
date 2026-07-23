@@ -164,7 +164,7 @@ import Testing
         )
         #expect(
             SearchHistoryAIStage.completed(
-                coarse: .failed(message: "coarse failed", candidates: 8),
+                coarse: .idle,
                 evidence: .idle
             ) == .localCandidates
         )

@@ -380,23 +380,6 @@ struct PassageHit: Identifiable, Hashable {
     let matchedTerms: [String]
 }
 
-struct CorpusPassageHit: Identifiable, Hashable {
-    let work: Work
-    let document: FullTextDocument
-    let passage: PassageHit
-
-    var id: String {
-        "\(work.id)-\(passage.id)"
-    }
-}
-
-enum CorpusAnalysisState: Equatable {
-    case idle
-    case loading(completed: Int, total: Int)
-    case loaded
-    case failed(String)
-}
-
 enum FullTextLoadState: Equatable {
     case idle
     case loading

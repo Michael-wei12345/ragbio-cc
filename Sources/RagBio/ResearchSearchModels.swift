@@ -94,6 +94,7 @@ enum DiscoverySource: String, Codable, Hashable, CaseIterable {
     case openAlex
     case pubMed
     case clinicalTrials
+    case citation
 }
 
 struct SearchCandidateHit: Hashable {
@@ -108,6 +109,198 @@ struct FusedCandidate: Hashable {
     let discoveryScore: Double
     let sources: Set<DiscoverySource>
     let firstSeenOrder: Int
+}
+
+enum CandidateTriageDisposition: String, Codable, CaseIterable {
+    /// The title/abstract directly supports keeping this record for evidence preparation.
+    case likely
+    /// Evidence is missing or insufficient. Unclear records are protected from automatic removal.
+    case unclear
+    /// A review, guideline, protocol, or registry record that can support context or citation chasing.
+    case background
+    /// A high-confidence mismatch on a core eligibility concept.
+    case explicitMismatch = "explicit_mismatch"
+}
+
+struct AICandidateTriageOutput: Decodable, Equatable {
+    let index: Int
+    let disposition: CandidateTriageDisposition
+    let directness: Int
+    let confidence: EvidenceConfidence
+
+    func withIndex(_ index: Int) -> Self {
+        Self(
+            index: index,
+            disposition: disposition,
+            directness: directness,
+            confidence: confidence
+        )
+    }
+}
+
+struct AICandidateTriageResponse: Decodable {
+    let decisions: [AICandidateTriageOutput]
+}
+
+enum CandidatePoolSelector {
+    /// Selects the bounded evidence-preparation set. This is deliberately not the final ranking:
+    /// it only keeps likely and uncertain records ahead of clear mismatches.
+    static func select(
+        from candidates: [FusedCandidate],
+        decisions: [Int: AICandidateTriageOutput],
+        profile: ResearchQuestionProfile?,
+        limit: Int,
+        unclearReserve: Int = 30,
+        backgroundReserve: Int = 12
+    ) -> [Work] {
+        guard limit > 0 else { return [] }
+
+        struct Row {
+            let candidate: FusedCandidate
+            let disposition: CandidateTriageDisposition
+            let directness: Int
+            let localPriority: Double
+        }
+
+        let rows = candidates.enumerated().map { index, candidate -> Row in
+            let decision = decisions[index]
+            let disposition = protectedDisposition(
+                decision,
+                for: candidate.work
+            )
+            return Row(
+                candidate: candidate,
+                disposition: disposition,
+                directness: min(3, max(0, decision?.directness ?? 0)),
+                localPriority: CandidateDiscoveryScorer.score(
+                    work: candidate.work,
+                    profile: profile
+                )
+            )
+        }
+
+        func isHigherPriority(_ lhs: Row, than rhs: Row) -> Bool {
+            if lhs.directness != rhs.directness {
+                return lhs.directness > rhs.directness
+            }
+            if lhs.localPriority != rhs.localPriority {
+                return lhs.localPriority > rhs.localPriority
+            }
+            if lhs.candidate.sources.count != rhs.candidate.sources.count {
+                return lhs.candidate.sources.count > rhs.candidate.sources.count
+            }
+            if lhs.candidate.discoveryScore != rhs.candidate.discoveryScore {
+                return lhs.candidate.discoveryScore > rhs.candidate.discoveryScore
+            }
+            return lhs.candidate.firstSeenOrder < rhs.candidate.firstSeenOrder
+        }
+
+        func ordered(_ disposition: CandidateTriageDisposition) -> [Row] {
+            rows.filter { $0.disposition == disposition }
+                .sorted { isHigherPriority($0, than: $1) }
+        }
+
+        let likely = ordered(.likely)
+        let unclear = ordered(.unclear)
+        let background = ordered(.background)
+        let protectedBackground = min(limit, min(backgroundReserve, background.count))
+        let protectedUnclear = min(
+            max(0, limit - protectedBackground),
+            min(unclearReserve, unclear.count)
+        )
+        let initialLikelyLimit = max(0, limit - protectedUnclear - protectedBackground)
+
+        var selected = Array(likely.prefix(initialLikelyLimit))
+        selected += unclear.prefix(protectedUnclear)
+        selected += background.prefix(protectedBackground)
+
+        if selected.count < limit {
+            let selectedIDs = Set(selected.map(\.candidate.work.id))
+            let remaining = (likely + unclear + background)
+                .filter { !selectedIDs.contains($0.candidate.work.id) }
+                .sorted { isHigherPriority($0, than: $1) }
+            selected += remaining.prefix(limit - selected.count)
+        }
+        return selected.prefix(limit).map(\.candidate.work)
+    }
+
+    /// Missing evidence and low-confidence model judgments never become automatic exclusions.
+    private static func protectedDisposition(
+        _ decision: AICandidateTriageOutput?,
+        for work: Work
+    ) -> CandidateTriageDisposition {
+        if work.abstractText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            return .unclear
+        }
+        if work.nonPrimaryPublicationKind != nil {
+            return .background
+        }
+        guard let decision else { return .unclear }
+        if decision.disposition == .explicitMismatch, decision.confidence != .high {
+            return .unclear
+        }
+        return decision.disposition
+    }
+}
+
+enum CandidateDiscoveryScorer {
+    /// Cheap title/abstract priority used only to keep the AI triage set bounded. It never applies
+    /// the final 5% threshold and never turns missing evidence into a mismatch.
+    static func score(work: Work, profile: ResearchQuestionProfile?) -> Double {
+        guard let profile else { return 0 }
+        let title = normalized(work.title)
+        let abstract = normalized(work.abstractText ?? "")
+        let titleTokens = Set(tokens(title))
+        let abstractTokens = Set(tokens(abstract))
+        let groups = [
+            profile.population,
+            profile.interventionOrExposure,
+            profile.comparator,
+            profile.outcomes,
+            profile.context
+        ].filter { !$0.isEmpty }
+
+        var value = 0.0
+        for concepts in groups {
+            let best = concepts.map { concept -> Double in
+                let conceptTokens = Set(tokens(normalized(concept)))
+                guard !conceptTokens.isEmpty else { return 0 }
+                let titleOverlap = Double(conceptTokens.intersection(titleTokens).count)
+                    / Double(conceptTokens.count)
+                let abstractOverlap = Double(conceptTokens.intersection(abstractTokens).count)
+                    / Double(conceptTokens.count)
+                return max(titleOverlap * 1.5, abstractOverlap)
+            }.max() ?? 0
+            value += best
+        }
+
+        let designText = [work.title, work.abstractText ?? "", work.publicationTypes?.joined(separator: " ") ?? ""]
+            .joined(separator: " ")
+            .lowercased()
+        if profile.preferredStudyDesigns.contains(where: {
+            let clean = normalized($0)
+            return !clean.isEmpty && designText.contains(clean)
+        }) {
+            value += 1.25
+        } else if designText.range(
+            of: #"\b(?:randomized|randomised|trial|cohort|case control|prospective|retrospective)\b"#,
+            options: .regularExpression
+        ) != nil {
+            value += 0.6
+        }
+        return value
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(of: #"[^\p{L}\p{N}]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func tokens(_ value: String) -> [String] {
+        value.split(separator: " ").map(String.init).filter { $0.count >= 2 }
+    }
 }
 
 enum EvidenceMatch: String, Codable, CaseIterable {
@@ -459,6 +652,48 @@ enum CandidateFusion {
                 + (work.normalizedPMID == nil ? 0 : 500)
                 + (work.normalizedDOI == nil ? 0 : 250)
         }
-        return richness(rhs) > richness(lhs) ? rhs : lhs
+        let prefersRHS = richness(rhs) > richness(lhs)
+        let preferred = prefersRHS ? rhs : lhs
+        let secondary = prefersRHS ? lhs : rhs
+        var locations = preferred.locations
+        locations += secondary.locations.filter { !locations.contains($0) }
+        var publicationTypes = preferred.publicationTypes ?? []
+        publicationTypes += (secondary.publicationTypes ?? []).filter {
+            !publicationTypes.contains($0)
+        }
+        let abstract = [lhs.abstractText, rhs.abstractText]
+            .compactMap { $0 }
+            .max { $0.count < $1.count }
+        let openAccessWork = lhs.isOpenAccess ? lhs : (rhs.isOpenAccess ? rhs : nil)
+        return Work(
+            id: preferred.id,
+            doi: preferred.doi ?? secondary.doi,
+            title: preferred.title,
+            publicationDate: preferred.publicationDate ?? secondary.publicationDate,
+            publicationYear: preferred.publicationYear ?? secondary.publicationYear,
+            citedByCount: max(preferred.citedByCount, secondary.citedByCount),
+            authorships: preferred.authorships.isEmpty
+                ? secondary.authorships
+                : preferred.authorships,
+            abstractInvertedIndex: nil,
+            primaryLocation: preferred.primaryLocation ?? secondary.primaryLocation,
+            bestOpenAccessLocation: preferred.bestOpenAccessLocation
+                ?? secondary.bestOpenAccessLocation,
+            openAccess: openAccessWork?.openAccess
+                ?? preferred.openAccess
+                ?? secondary.openAccess,
+            contentURLs: preferred.contentURLs ?? secondary.contentURLs,
+            hasFullText: preferred.hasFullText == true || secondary.hasFullText == true,
+            ids: WorkIDs(
+                pmid: preferred.ids?.pmid ?? secondary.ids?.pmid,
+                pmcid: preferred.ids?.pmcid ?? secondary.ids?.pmcid
+            ),
+            locations: locations,
+            isRetracted: preferred.isRetracted == true || secondary.isRetracted == true,
+            type: preferred.type ?? secondary.type,
+            publicationTypes: publicationTypes.isEmpty ? nil : publicationTypes,
+            language: preferred.language ?? secondary.language,
+            abstractPlain: abstract
+        )
     }
 }

@@ -99,6 +99,12 @@ private struct SidebarView: View {
                     systemImage: "line.3.horizontal.decrease.circle",
                     description: "可以调整研究问题或检索限制后重试。"
                 )
+            } else if store.completedSearchFilteredToNoResults {
+                EmptyStateView(
+                    title: "没有论文符合当前筛选条件",
+                    systemImage: "line.3.horizontal.decrease.circle",
+                    description: "可以关闭“仅开放获取”或调低起始年份。"
+                )
             } else if store.works.isEmpty {
                 EmptyStateView(
                     title: "检索学术文献",
@@ -129,10 +135,6 @@ private struct SidebarView: View {
             return "正在并行检索多个文献来源…"
         case .localReady:
             return "已恢复历史候选；可重新进行全局精排…"
-        case let .ranking(completed, total):
-            return "正在分析候选 \(completed)/\(total)…"
-        case .failed:
-            return "候选排序失败，正在保留可恢复的历史结果…"
         default:
             return "正在检索多个文献来源…"
         }
@@ -143,18 +145,6 @@ private struct SidebarView: View {
             HStack {
                 Text("第 \(store.currentPage) 页 · \(store.visibleResultRange)")
                 Spacer()
-                switch store.corpusState {
-                case let .loading(completed, total):
-                    ProgressView(value: Double(completed), total: Double(total))
-                        .frame(width: 70)
-                    Text("分析本页 \(completed)/\(total)")
-                case .loaded:
-                    Label("本页已分析", systemImage: "checkmark.circle")
-                case .failed:
-                    Label("本页分析失败", systemImage: "exclamationmark.triangle")
-                default:
-                    Text("等待分析")
-                }
                 switch store.aiSecondRerankState {
                 case .completed:
                     Text("全局精排完成")
@@ -164,8 +154,6 @@ private struct SidebarView: View {
                         Text("已恢复 \(candidates) 篇历史候选")
                     case .completed:
                         Text("全局精排完成")
-                    case .failed:
-                        Text("候选排序未完成")
                     default:
                         Text("约 \(store.totalCount.formatted()) 条结果")
                     }
@@ -278,21 +266,8 @@ private struct SearchHeader: View {
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            case let .ranking(completed, total):
-                HStack {
-                    ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                    Text("分析候选 \(completed)/\(total)")
-                        .font(.caption.monospacedDigit())
-                }
             case .completed:
                 EmptyView()
-            case let .failed(message, _):
-                Label(
-                    message,
-                    systemImage: "info.circle"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
             case .idle:
                 EmptyView()
             }
@@ -400,17 +375,35 @@ private struct SearchHeader: View {
                 }
                 .labelsHidden()
 
-                Toggle("仅开放获取", isOn: $store.openAccessOnly)
+                Toggle(
+                    "仅开放获取",
+                    isOn: Binding(
+                        get: { store.openAccessOnly },
+                        set: store.setOpenAccessFilter
+                    )
+                )
                     .toggleStyle(.checkbox)
                     .font(.caption)
             }
 
             HStack {
-                Toggle("起始年份", isOn: $store.fromYearEnabled)
+                Toggle(
+                    "起始年份",
+                    isOn: Binding(
+                        get: { store.fromYearEnabled },
+                        set: store.setFromYearFilterEnabled
+                    )
+                )
                     .toggleStyle(.checkbox)
                     .font(.caption)
 
-                Picker("年份", selection: $store.fromYear) {
+                Picker(
+                    "年份",
+                    selection: Binding(
+                        get: { store.fromYear },
+                        set: store.setFromYearFilter
+                    )
+                ) {
                     ForEach(
                         Array((1900...Calendar.current.component(.year, from: Date())).reversed()),
                         id: \.self
@@ -972,13 +965,6 @@ private struct WorkTranslationButton: View {
                 )
                 values[key] = paragraph.text
             }
-        }
-        for hit in store.corpusHits where hit.work.id == work.id {
-            let key = store.passageTranslationKey(
-                workID: work.id,
-                passageID: hit.passage.id
-            )
-            values[key] = hit.passage.paragraph.text
         }
         if store.selectedWork?.id == work.id {
             for hit in store.passageHits {

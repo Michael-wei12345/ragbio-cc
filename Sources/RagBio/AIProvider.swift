@@ -297,9 +297,7 @@ enum AIRerankState: Equatable {
     case idle
     case fetchingCandidates
     case localReady(candidates: Int)
-    case ranking(completed: Int, total: Int)
     case completed(candidates: Int, retained: Int)
-    case failed(message: String, candidates: Int)
 }
 
 enum AISecondRerankState: Equatable {

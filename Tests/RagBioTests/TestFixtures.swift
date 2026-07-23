@@ -19,7 +19,9 @@ func makeWork(
     bestPublisherURL: String? = nil,
     type: String? = "article",
     publicationTypes: [String]? = nil,
-    isRetracted: Bool = false
+    isRetracted: Bool = false,
+    isOpenAccess: Bool = true,
+    abstract: String? = "Fixture abstract"
 ) -> Work {
     Work(
         id: id,
@@ -33,9 +35,9 @@ func makeWork(
         } ?? [],
         abstractInvertedIndex: nil,
         primaryLocation: Location(
-            isOpenAccess: true,
+            isOpenAccess: isOpenAccess,
             landingPageURL: publisherURL,
-            pdfURL: "https://publisher.example/article.pdf",
+            pdfURL: isOpenAccess ? "https://publisher.example/article.pdf" : nil,
             source: Source(displayName: "Example Journal"),
             license: nil,
             version: nil
@@ -50,7 +52,11 @@ func makeWork(
                 version: nil
             )
         },
-        openAccess: OpenAccess(isOpenAccess: true, status: "gold", openAccessURL: nil),
+        openAccess: OpenAccess(
+            isOpenAccess: isOpenAccess,
+            status: isOpenAccess ? "gold" : "closed",
+            openAccessURL: nil
+        ),
         contentURLs: nil,
         hasFullText: false,
         ids: WorkIDs(pmid: pmid, pmcid: nil),
@@ -59,7 +65,7 @@ func makeWork(
         type: type,
         publicationTypes: publicationTypes,
         language: "en",
-        abstractPlain: "Fixture abstract"
+        abstractPlain: abstract
     )
 }
 

@@ -47,6 +47,7 @@ enum BibliographicTitleResolver {
 /// keywords into MeSH-aware queries, so callers can pass natural search text.
 struct PubMedClient {
     var session: URLSession = .shared
+    private static let requestLimiter = PubMedRequestLimiter()
 
     private let esearchBase = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
     private let efetchBase = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
@@ -85,11 +86,19 @@ struct PubMedClient {
         )
         guard !pmids.isEmpty else { return [] }
 
-        let articles = try await efetch(
-            pmids: pmids,
-            contactEmail: contactEmail,
-            timeout: timeout
-        )
+        var articles: [PubMedArticle] = []
+        // NCBI recommends batching EFetch and using POST above roughly 200 IDs. Keeping chunks at
+        // 200 also avoids oversized URLs while a shared limiter keeps all concurrent query lanes
+        // below the unauthenticated E-utilities request rate.
+        for start in stride(from: 0, to: pmids.count, by: 200) {
+            try Task.checkCancellation()
+            let end = min(start + 200, pmids.count)
+            articles += try await efetch(
+                pmids: Array(pmids[start..<end]),
+                contactEmail: contactEmail,
+                timeout: timeout
+            )
+        }
         return articles.map(makeWork(from:))
     }
 
@@ -172,6 +181,7 @@ struct PubMedClient {
         var lastError: Error?
         for attempt in 0..<maxAttempts {
             do {
+                await Self.requestLimiter.acquire()
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     throw PubMedError.badStatus(-1)
@@ -219,6 +229,17 @@ struct PubMedClient {
         )
         let authorships = article.authors.map { Authorship(author: Author(id: nil, displayName: $0)) }
         let pmcid = article.pmcid.map { $0.uppercased().hasPrefix("PMC") ? $0 : "PMC\($0)" }
+        let pmcURL = pmcid.map { "https://pmc.ncbi.nlm.nih.gov/articles/\($0)/" }
+        let pmcLocation = pmcURL.map {
+            Location(
+                isOpenAccess: true,
+                landingPageURL: $0,
+                pdfURL: nil,
+                source: Source(displayName: "PubMed Central"),
+                license: nil,
+                version: "publishedVersion"
+            )
+        }
         let abstract = article.abstractParts.isEmpty
             ? nil
             : article.abstractParts.joined(separator: "\n\n")
@@ -238,12 +259,14 @@ struct PubMedClient {
             authorships: authorships,
             abstractInvertedIndex: nil,
             primaryLocation: primary,
-            bestOpenAccessLocation: nil,
-            openAccess: nil,
+            bestOpenAccessLocation: pmcLocation,
+            openAccess: pmcURL.map {
+                OpenAccess(isOpenAccess: true, status: "green", openAccessURL: $0)
+            },
             contentURLs: nil,
-            hasFullText: nil,
+            hasFullText: pmcid == nil ? nil : true,
             ids: WorkIDs(pmid: article.pmid, pmcid: pmcid),
-            locations: [primary],
+            locations: [primary] + [pmcLocation].compactMap { $0 },
             isRetracted: article.isRetracted ? true : nil,
             type: nil,
             publicationTypes: article.publicationTypes.isEmpty ? nil : article.publicationTypes,
@@ -255,6 +278,20 @@ struct PubMedClient {
     private static func firstYear(in text: String) -> Int? {
         guard let match = text.range(of: #"\d{4}"#, options: .regularExpression) else { return nil }
         return Int(text[match])
+    }
+}
+
+private actor PubMedRequestLimiter {
+    private var nextRequestAt = ContinuousClock.now
+    private let minimumInterval = Duration.milliseconds(350)
+
+    func acquire() async {
+        let clock = ContinuousClock()
+        let now = clock.now
+        if now < nextRequestAt {
+            try? await Task.sleep(until: nextRequestAt, clock: clock)
+        }
+        nextRequestAt = max(clock.now, nextRequestAt) + minimumInterval
     }
 }
 

@@ -2,7 +2,7 @@
 
 本文档面向软件工程同事，说明 RagBio 当前实现背后的主要逻辑、数据流、模块职责和关键取舍。它不是用户手册，而是用于快速理解代码结构和系统行为的工程说明。
 
-当前实现日期：2026-07-09。
+当前实现日期：2026-07-22。
 
 ## 1. 产品定位
 
@@ -86,7 +86,7 @@ flowchart LR
 | `ContentView.swift` | 在线检索 UI、详情页、设置页、翻译/收藏/读取全文入口 | 不直接解析全文，不直接写文库文件 |
 | `SearchStore.swift` | 在线搜索状态机、AI 搜索流程、全文读取触发、证据等级、summary 状态 | 不保存 PDF 文库 catalog |
 | `OpenAlexClient.swift` | OpenAlex works API 请求、重试、短期内存缓存 | 不做 AI 排序，不判断全文可信度 |
-| `AIQueryPlanner.swift` | AI search plan、AI 摘要粗排、翻译、全文 summary JSON 生成 | 不直接联网检索论文数据库 |
+| `AIQueryPlanner.swift` | AI search plan、保守资格初筛、结构化证据卡、全局评分、翻译和全文 summary JSON 生成 | 不直接联网检索论文数据库 |
 | `FullTextService.swift` | Europe PMC、OpenAlex TEI/PDF、Unpaywall、Semantic Scholar、开放 PDF、摘要 fallback | 不绕过付费墙 |
 | `FullTextParser.swift` | XML/PDF/OCR 解析为段落结构 | 不判断论文是否相关 |
 | `HybridRetriever.swift` | 本机段落检索和混合打分 | 不调用大模型 |
@@ -215,61 +215,48 @@ OpenAlex query 规范化在 `Sources/RagBio/OpenAlexQueryNormalizer.swift`：
 
 ## 5. AI 搜索总体逻辑
 
-AI 搜索不是让模型直接检索互联网。它分成几个阶段：
+AI 搜索不是让模型直接凭记忆列论文，也不是把数据库最前面的固定 60 篇全部下载全文。当前流程是一个高召回、分层限流的漏斗：
 
-1. 大模型把自然语言问题转换成 `AISearchPlan`。
-2. App 用 `AISearchPlan.search_query` 去 OpenAlex 获取候选论文。
-3. 本地快速排序先显示临时候选，避免界面空白。
-4. 大模型对前 25 篇候选做摘要级粗排。
-5. App 对前 20 篇证据候选尝试读取全文。
-6. 对读到全文的论文做本地段落检索和证据级重排。
-7. 对读到全文的论文生成英文 literature review summary。
-8. 用户翻页后，当前页还会后台尝试补全文和生成 summary。
+1. 大模型把自然语言问题转换成 PICO/PECO、目标研究类型和多来源 `AISearchPlan`。
+2. OpenAlex、PubMed 和 ClinicalTrials.gov 分别运行多条来源专用检索式，形成较大的元数据/摘要池。
+3. DOI、PMID 和标准化标题用于跨来源去重；少量 Review/Meta-analysis 作为种子做一轮引用追踪。
+4. 便宜的本地概念/研究设计优先级把 AI 资格初筛限制在最多 480 条。
+5. 大模型只做保守的标题/摘要资格分层，不输出最终分数：`Likely`、`Unclear`、`Background`、`Explicit mismatch`。
+6. 最多 180 篇进入证据准备；前 120 篇尝试读取全文，其余使用摘要。
+7. 分批建立结构化证据卡，再对所有候选执行一次全局统一评分。
+8. 只显示最终 `score >= 5` 的论文；翻页只切片已保存数组。
 
-当前 active path 里有一个有意的速度取舍：AI 只做 search plan、摘要级粗排和全文 summary；全文证据阶段主要使用本机检索和本机证据排序。原先未接入的“大模型 evidence rerank”死代码已经删除，避免维护者误以为全文补强还会额外调用第二轮模型重排。
+顶部“仅开放获取”和“起始年份”始终是可逆的结果筛选器：
+
+- 候选发现不使用这两个控件提前排除记录；OpenAlex、PubMed、ClinicalTrials.gov 和引用追溯结果先按统一流程融合、初筛并全局排序。
+- 搜索开始前设置的值只决定完成后最初显示的子集，模型生成的冲突值仍由用户控件覆盖。
+- 搜索完成后调整或关闭筛选会立即过滤已完成全局排序的数组、重算页数并回到第一页；关闭后可以恢复同一次搜索中其他已排序论文。
+- 整个筛选过程不产生数据库、全文或模型请求。
 
 当前关键参数在 `SearchStore.swift`：
 
 ```swift
 pageSize = 20
-aiCandidateLimit = 50
-aiCandidatePageSize = 50
-aiCoarseRankingBatchSize = 25
-aiCoarseRankingLimit = 25
-aiEvidenceCandidateLimit = 20
+triagePoolLimit = 480
+aiCandidateLimit = 180
+fullTextPreparationLimit = 120
+openAlexCandidatePageSize = 200
+pubMedCandidatePageSize = 500
+candidateTriageBatchSize = 32
 ```
 
-含义：
-
-- OpenAlex 最多取 50 篇 AI 候选。
-- 每页显示 20 篇。
-- 大模型摘要粗排优先处理前 25 篇。
-- 证据精排优先处理前 20 篇。
-- 翻页后会对新显示页后台尝试补全文。
+候选池上限、AI 资格初筛上限、最终证据候选上限和全文下载上限彼此独立。扩大数据库召回不会线性放大全文下载、段落 embedding 或最终模型输入。
 
 ## 6. AI Search Plan
 
 AI 搜索第一步由 `AIQueryPlanner.plan(...)` 生成 `AISearchPlan`。
 
-结构：
+除兼容字段 `search_query`、年份、开放获取和排序外，计划还包含：
 
-```swift
-struct AISearchPlan {
-    let searchQuery: String
-    let fromYear: Int?
-    let openAccessOnly: Bool
-    let sort: SearchSort
-    let explanation: String
-}
-```
-
-字段含义：
-
-- `search_query`：英文 OpenAlex 普通搜索词。
-- `from_year`：可选起始年份。
-- `open_access_only`：是否只看开放获取。
-- `sort`：相关性、最新发表、引用数。
-- `explanation`：中文解释，告诉用户模型如何理解问题。
+- `question_profile`：问题类型、Population、Intervention/Exposure、Comparator、Outcome、Context 和优先研究设计。
+- `openalex_queries`：2–4 条简短自然语言检索通道。
+- `pubmed_queries`：2–4 条包含 MeSH/`[tiab]` 同义词的布尔检索通道。
+- `clinical_trials_queries`：1–3 条注册平台检索通道。
 
 重要约束：
 
@@ -279,163 +266,67 @@ struct AISearchPlan {
 - 对 `NDC` 这类缩写，App 会提示模型保留原缩写，不要乱扩展。
 - 在药物、处方、claims、EHR、不良反应、药品编码语境中，`NDC` 优先理解为 `National Drug Code(s)`，同时保留 `NDC`。
 
-超时策略：
-
-- AI plan 最多等 6 秒。
-- 如果大模型没有按时返回，App 直接提示失败。
-- 当前实现不会再用本地规则伪造 AI 检索式。
-
-这是刻意设计：宁愿告诉用户“大模型没返回”，也不要用关键词兜底结果冒充 AI 搜索结果。
+AI plan 有 22 秒软超时。计划失败会直接提示，不用本地规则伪造模型理解结果。
 
 ## 7. AI 候选获取
 
-AI plan 成功后，App 会检查 OpenAlex API Key。
-
-当前 AI 候选检索要求 OpenAlex Key。没有 Key 时，AI 搜索直接失败并提示配置 OpenAlex。
-
 候选获取逻辑：
 
-1. 用规范化后的 `plan.searchQuery` 作为 OpenAlex `search` 参数。
-2. 应用 `plan.sort`、`plan.fromYear`、`plan.openAccessOnly`。
-3. `per-page = 50`。
-4. 去重。
-5. 最多保留 50 篇。
+1. OpenAlex 每条通道取最多 200 条；PubMed 每条通道最多 500 条；ClinicalTrials.gov 每条通道最多 50 条。
+2. PubMed EFetch 每批最多 200 个 PMID，并通过进程级限流器把所有并行通道控制在匿名 E-utilities 约 3 请求/秒以内。
+3. `CandidateFusion` 使用 DOI、PMID 和标题合并记录，同时保留多来源命中优势。
+4. 取最多两个相关 Review/Meta-analysis 作为 seed，通过 OpenAlex 获取最多 200 条被引参考文献和 40 条相关后续引用。
+5. 融合后不按数据库原始排名硬截断，先对全部已获取记录计算本地资格优先级。
 
-候选只是“可能相关”，不是最终排序。
+## 8. 保守资格初筛
 
-## 8. 本地快速排序
+标题/摘要阶段不是旧版“摘要相关度排序”，不会产生 UI 百分比，也不会把结果当成最终顺序。
 
-拿到 OpenAlex 候选后，App 会先做本地快速排序并立即显示。
+第一层 `CandidateDiscoveryScorer` 只进行便宜的 PICO/PECO token overlap 和研究设计优先级计算，把 AI 输入限制在最多 480 条。第二层 `AIQueryPlanner.triageCandidateBatch(...)` 每批 32 条，最多 6 个并发请求，输出：
 
-目的：
+- `Likely`：直接或很可能有用的 primary/follow-up/subgroup/safety 证据。
+- `Unclear`：摘要缺失、证据不足或判断不确定。
+- `Background`：Review、Meta-analysis、Guideline、Protocol、Registry 等背景或引用入口。
+- `Explicit mismatch`：摘要明确陈述核心人群、干预/暴露、结局主体或场景不匹配。
 
-- 避免用户等待大模型粗排时界面一直空白。
-- 给用户一个可见的首屏反馈。
+保护规则：
 
-输入：
+- 无摘要永远是 `Unclear`。
+- AI 请求失败的批次默认是 `Unclear`。
+- 只有高置信度 `Explicit mismatch` 才能在全文准备前停放。
+- 数据库已标记的 Review/Guideline 等保持 `Background`，不会被模型误写成 primary。
+- 最终集合为 `Likely` 保留主体，同时固定保留一定数量的 `Unclear` 和 `Background`。
 
-- 用户原始问题
-- AI search query
-- 候选标题
-- 摘要
-- 期刊
-- 是否有摘要
-- 是否开放获取
+## 9. 全局证据精排
 
-逻辑：
+最多 180 篇进入 `rankAllCandidatesWithEvidence(...)`：
 
-- 标题命中 query token 加分较高。
-- 摘要命中加分较低。
-- 期刊命中少量加分。
-- 有摘要加分。
-- 开放获取加分。
-- 初始顺序越靠前有基础分。
+1. 只有前 120 篇尝试自动全文获取；其余使用摘要。
+2. 单篇全文获取为 6 秒软超时，标题不匹配或无法读取时降级为摘要。
+3. 本地段落检索在后台 utility task 中运行，复用段落 embedding 缓存；一次搜索最多生成 500 个新向量。
+4. 每篇全文保留章节分布合理的 6 个证据段落。
+5. 大模型分批生成结构化证据卡；失败批次使用本地证据卡。
+6. 紧凑证据卡覆盖全部候选，执行一次统一的 0–100 全局评分。
+7. 同分保持候选发现顺序，只显示 `score >= 5`。
 
-输出：
+缺少全文只降低 `Confidence`，不会自动降低相关度。最终统一评分失败时使用本地证据卡排序、明确标记未完成，并允许复用缓存重试。
 
-- `aiScores`
-- `aiReasons`
-- `aiEvidenceLevels = "临时候选"`
+## 10. 翻页和历史恢复
 
-本地快速排序不是最终 AI 结果。它只是首屏兜底。
+全局排序完成前不显示临时候选列表。完成后，所有页面都来自同一个最终数组：
 
-## 9. AI 摘要粗排
+- 翻页只做数组切片，不调用模型、不重新下载全文。
+- 搜索历史保存最终顺序、分数、证据等级和结构化证据卡。
+- 恢复历史不重新运行数据库检索、资格初筛或全局评分。
+- 单篇 Article Summary 仍在用户打开详情页时按需生成，不阻塞全局排序。
 
-本地快速排序显示后，App 会在后台调用大模型对候选做摘要级粗排。
+## 11. 召回和性能边界
 
-当前只优先处理前 25 篇：
-
-```swift
-aiCoarseRankingLimit = 25
-aiCoarseRankingBatchSize = 25
-```
-
-输入给模型：
-
-- 用户原始问题
-- 论文标题
-- 年份
-- 期刊
-- OpenAlex 摘要，截断后输入
-
-模型输出：
-
-- `score`：0 到 100
-- `relevant`：是否相关
-- `reason`：中文短句，概括为什么相关
-
-粗排完成后：
-
-- 相关论文排到前面。
-- 其余候选仍保留在后面，避免漏掉潜在相关论文。
-- UI 会显示“AI 已优先精排前 25 篇；其余候选仍保留在后面”。
-
-如果 AI 粗排失败或超时：
-
-- App 保留本地快速排序结果。
-- UI 明确提示“AI 粗排未返回”或类似状态。
-- 不把它当作最终 AI 排序。
-
-## 10. 证据精排和全文段落精排
-
-证据精排的目标是：优先让读到全文的论文获得更可靠的排序和 summary，而不是只靠标题摘要。
-
-当前实现路径在 `SearchStore.rerankWithFullTextEvidence(...)`。
-
-阶段一：无全文的初始证据排序
-
-1. 取 AI ranked works 的前 20 篇。
-2. 先构造没有全文段落的 evidence inputs。
-3. 用本地 `fallbackEvidenceRanking(...)` 生成初始证据排序。
-4. 立刻显示这批结果。
-
-阶段二：全文补强
-
-1. 对这 20 篇并发尝试读取全文。
-2. 单篇全文读取软超时为 6 秒。
-3. 只接受 `source.isFullText == true` 的文档。
-4. 自动获取的全文还要通过标题匹配校验。
-5. 成功读到全文后，写入 `aiFullTextDocuments`。
-6. 对全文段落运行 `HybridRetriever.search(...)`，每篇取最相关 3 个段落。
-7. 再用本地 `fallbackEvidenceRanking(...)` 更新排序和证据等级。
-8. 对这些全文论文启动 literature review summary 生成。
-
-关键点：
-
-- 当前 active path 中，“证据精排”主要是本地逻辑，不是再次调用大模型做证据排序。
-- 未接入的 `rankEvidenceInputs(...)` / `rankEvidenceInputsWithModel(...)` / `rankEvidenceBatch(...)` 已删除，避免死代码误导维护者。
-- 这样做是为了控制速度和稳定性，避免全文阶段被大模型二次请求拖慢。
-
-证据等级：
-
-- `全文段落精排`：读到合法全文，并用全文段落参与本地证据排序。
-- `仅摘要精排`：没有全文，只能用摘要参与排序。
-- `全文已读取`：翻页后后台补全文成功，但不一定重新触发完整首屏精排。
-- `临时候选`：OpenAlex 候选已展示，但 AI 粗排或证据阶段尚未完成。
-
-## 11. 翻页后的后台补全文
-
-AI 搜索列表不是只处理第一页。
-
-每次 `showAIPage(...)` 显示当前页时，如果当前是 AI 模式，会调用：
-
-```swift
-enrichVisibleAIPageFullTextInBackground(...)
-```
-
-它会对当前页还没有全文的论文尝试后台读取全文。
-
-逻辑：
-
-- 只处理当前页可见的论文。
-- 已有全文、正在生成 summary、正在读取全文的论文跳过。
-- 单篇软超时 14 秒。
-- 读到全文后存入 `aiFullTextDocuments`。
-- 更新证据等级为 `全文已读取`。
-- 启动 literature review summary 生成。
-- 如果没有找到全文，记录到 `aiVisiblePageFullTextFailures`，详情页会显示说明。
-
-因此，第一页一开始可能只有摘要；过一段时间或用户翻页后，部分论文会补出全文 summary。
+- 扩大的是元数据/摘要池，不是全文池。
+- 引用数、期刊影响力和新近程度不直接提高研究问题相关度。
+- 5% 阈值只作用于完成证据评分的最终候选，不能用于截断数据库召回。
+- 不足以评分的记录不能伪装成 0–4 分；它们属于失败或 `Unclear`。
+- Review/Guideline 可以作为背景证据或引用追踪 seed，`Likely Primary` 过滤器只改变显示，不改变底层候选保存。
 
 ## 12. 全文获取链路
 

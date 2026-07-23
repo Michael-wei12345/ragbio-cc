@@ -28,9 +28,6 @@ final class SearchStore: ObservableObject {
     @Published private(set) var fullTextDocument: FullTextDocument?
     @Published private(set) var passageHits: [PassageHit] = []
     @Published var passageQuery = ""
-    @Published private(set) var corpusState: CorpusAnalysisState = .idle
-    @Published private(set) var corpusDocuments: [String: FullTextDocument] = [:]
-    @Published private(set) var corpusHits: [CorpusPassageHit] = []
     @Published private(set) var aiFullTextDocuments: [String: FullTextDocument] = [:]
     @Published private(set) var fullTextReviewSummaries: [String: LiteratureReviewSummary] = [:]
     @Published private(set) var fullTextReviewSummaryInProgress: Set<String> = []
@@ -90,7 +87,6 @@ final class SearchStore: ObservableObject {
     private var aiRankedWorks: [Work] = []
     private var aiCandidateWorks: [Work] = []
     private var searchGeneration = 0
-    private var corpusAnalysisGeneration = 0
     private var historyRevision = 0
     private var historyMutationToken = SearchHistoryMutationToken()
     private var historyRefreshFallbackRecord: SearchHistoryRecord?
@@ -98,8 +94,14 @@ final class SearchStore: ObservableObject {
     private var useMutationTask: Task<Void, Never>?
     private var isRestoringHistory = false
     let pageSize = 20
-    private let aiCandidateLimit = 120
-    private let aiCandidatePageSize = 60
+    /// Metadata/abstract discovery is intentionally much broader than evidence preparation.
+    private let triagePoolLimit = 480
+    private let aiCandidateLimit = 180
+    private let fullTextPreparationLimit = 120
+    private let openAlexCandidatePageSize = 200
+    private let pubMedCandidatePageSize = 500
+    private let candidateTriageBatchSize = 32
+    private let candidateTriageMaxConcurrent = 6
     private let aiEvidenceBatchSize = 12
     private let evidenceAnalysisMaxConcurrent = 6
     private let fullTextMaxConcurrent = 12
@@ -108,7 +110,6 @@ final class SearchStore: ObservableObject {
 
     struct HistoryMutationContext: Equatable {
         let searchGeneration: Int
-        let corpusGeneration: Int
         let historyID: UUID?
     }
 
@@ -309,9 +310,6 @@ final class SearchStore: ObservableObject {
         fullTextDocument = nil
         passageHits = []
         passageQuery = snapshot.retrievalQuery
-        corpusState = .idle
-        corpusDocuments = [:]
-        corpusHits = []
         isLoading = false
         errorMessage = nil
         isGeneratingFieldScan = false
@@ -381,7 +379,6 @@ final class SearchStore: ObservableObject {
     func captureHistoryMutationContext() -> HistoryMutationContext {
         HistoryMutationContext(
             searchGeneration: searchGeneration,
-            corpusGeneration: corpusAnalysisGeneration,
             historyID: currentHistoryID
         )
     }
@@ -391,14 +388,8 @@ final class SearchStore: ObservableObject {
             && context.historyID == currentHistoryID
     }
 
-    private func isCurrentCorpusMutationContext(_ context: HistoryMutationContext) -> Bool {
-        isCurrentHistoryMutationContext(context)
-            && context.corpusGeneration == corpusAnalysisGeneration
-    }
-
     private func invalidateAsyncWork() {
         advanceSearchGeneration()
-        corpusAnalysisGeneration &+= 1
     }
 
     private func advanceSearchGeneration() {
@@ -493,9 +484,6 @@ final class SearchStore: ObservableObject {
         fullTextDocument = nil
         passageHits = []
         passageQuery = ""
-        corpusState = .idle
-        corpusDocuments = [:]
-        corpusHits = []
         aiFullTextDocuments = [:]
         fullTextReviewSummaries = [:]
         fullTextReviewSummaryInProgress = []
@@ -717,9 +705,29 @@ final class SearchStore: ObservableObject {
         case .candidate:
             return works.filter { $0.nonPrimaryPublicationKind == nil }
         case .use:
-            return useWorks
+            return useWorks.filter(matchesActiveResultFilters)
         default:
             return works
+        }
+    }
+
+    func setOpenAccessFilter(_ enabled: Bool) {
+        guard openAccessOnly != enabled else { return }
+        openAccessOnly = enabled
+        applyActiveResultFilters()
+    }
+
+    func setFromYearFilterEnabled(_ enabled: Bool) {
+        guard fromYearEnabled != enabled else { return }
+        fromYearEnabled = enabled
+        applyActiveResultFilters()
+    }
+
+    func setFromYearFilter(_ year: Int) {
+        guard fromYear != year else { return }
+        fromYear = year
+        if fromYearEnabled {
+            applyActiveResultFilters()
         }
     }
 
@@ -734,11 +742,6 @@ final class SearchStore: ObservableObject {
     func availableFullTextDocument(for work: Work) -> FullTextDocument? {
         if let document = fullTextDocument,
            document.workID == work.id,
-           document.source.isFullText,
-           Self.fullTextDocument(document, matches: work) {
-            return document
-        }
-        if let document = corpusDocuments[work.id],
            document.source.isFullText,
            Self.fullTextDocument(document, matches: work) {
             return document
@@ -1092,6 +1095,13 @@ final class SearchStore: ObservableObject {
         return false
     }
 
+    var completedSearchFilteredToNoResults: Bool {
+        !isLoading
+            && !aiRankedWorks.isEmpty
+            && works.isEmpty
+            && (openAccessOnly || fromYearEnabled)
+    }
+
     var totalPages: Int {
         min(500, max(1, Int(ceil(Double(totalCount) / Double(pageSize)))))
     }
@@ -1153,13 +1163,18 @@ final class SearchStore: ObservableObject {
         do {
             let planningStartedAt = Date()
             let currentFromYear = fromYearEnabled ? fromYear : nil
-            let plan = try await planAISearchWithSoftTimeout(
+            let generatedPlan = try await planAISearchWithSoftTimeout(
                 description: displayQuery,
                 configuration: configuration,
                 currentSort: sort,
                 currentFromYear: currentFromYear,
                 currentOpenAccessOnly: openAccessOnly,
                 timeoutSeconds: 22
+            )
+            let plan = Self.enforcingSearchControls(
+                on: generatedPlan,
+                fromYear: currentFromYear,
+                openAccessOnly: openAccessOnly
             )
             try ensureSearchIsActive(generation)
             let planningSeconds = elapsedSeconds(since: planningStartedAt)
@@ -1169,6 +1184,8 @@ final class SearchStore: ObservableObject {
             let candidateStartedAt = Date()
             let candidateResult = try await fetchAICandidates(
                 plan: plan,
+                originalRequest: displayQuery,
+                configuration: configuration,
                 apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? nil
                     : apiKey
@@ -1233,7 +1250,7 @@ final class SearchStore: ObservableObject {
                 searchTimingSummary = "全局精排未完成 · AI 理解 \(planningSeconds) 秒 · 候选获取 \(candidateSeconds) 秒"
             }
             isLoading = false
-            await showAIPage(1, analyze: false, persistStage: false)
+            showAIPage(1, persistStage: false)
             await commitFirstUsableHistoryStage(
                 displayQuery: displayQuery,
                 startedAt: searchStartedAt,
@@ -1273,7 +1290,11 @@ final class SearchStore: ObservableObject {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let service = fullTextService
         var documentsByID = aiFullTextDocuments
-        let pending = candidates.filter { documentsByID[$0.id] == nil }
+        let fullTextCandidates = Self.fullTextPreparationCandidates(
+            candidates,
+            limit: fullTextPreparationLimit
+        )
+        let pending = fullTextCandidates.filter { documentsByID[$0.id] == nil }
         var completed = candidates.count - pending.count
         aiSecondRerankState = .refiningFullText(completed: completed, total: candidates.count)
 
@@ -1623,6 +1644,13 @@ final class SearchStore: ObservableObject {
         }
     }
 
+    nonisolated static func fullTextPreparationCandidates(
+        _ candidates: [Work],
+        limit: Int
+    ) -> [Work] {
+        Array(candidates.prefix(max(0, limit)))
+    }
+
     nonisolated static func validatedGlobalScores(
         _ outputs: [AIGlobalScoreOutput],
         candidateCount: Int
@@ -1871,6 +1899,8 @@ final class SearchStore: ObservableObject {
 
     private func fetchAICandidates(
         plan: AISearchPlan,
+        originalRequest: String,
+        configuration: AIProviderConfiguration,
         apiKey: String?
     ) async throws -> (works: [Work], aiNotice: String?, pubMedNotice: String?) {
         let email = UserDefaults.standard
@@ -1889,11 +1919,11 @@ final class SearchStore: ObservableObject {
                         let response = try await self.client.search(
                             query: query,
                             sort: .relevance,
-                            fromYear: plan.fromYear,
-                            openAccessOnly: plan.openAccessOnly,
+                            fromYear: nil,
+                            openAccessOnly: false,
                             apiKey: apiKey,
                             page: 1,
-                            perPage: self.aiCandidatePageSize,
+                            perPage: self.openAlexCandidatePageSize,
                             timeout: 15,
                             maxAttempts: 3
                         )
@@ -1908,10 +1938,10 @@ final class SearchStore: ObservableObject {
                     do {
                         let works = try await self.pubMedClient.search(
                             query: query,
-                            fromYear: plan.fromYear,
-                            maxResults: self.aiCandidatePageSize,
+                            fromYear: nil,
+                            maxResults: self.pubMedCandidatePageSize,
                             contactEmail: (email?.isEmpty == false) ? email : nil,
-                            timeout: 18
+                            timeout: 25
                         )
                         return (.pubMed, lane, works, nil)
                     } catch {
@@ -1927,12 +1957,7 @@ final class SearchStore: ObservableObject {
                             pageSize: 50,
                             timeout: 18
                         )
-                        let filtered = works.filter { work in
-                            guard let fromYear = plan.fromYear,
-                                  let year = work.publicationYear else { return true }
-                            return year >= fromYear
-                        }
-                        return (.clinicalTrials, lane, filtered, nil)
+                        return (.clinicalTrials, lane, works, nil)
                     } catch {
                         return (.clinicalTrials, lane, [], error.localizedDescription)
                     }
@@ -1959,8 +1984,8 @@ final class SearchStore: ObservableObject {
                 )
             }
         }
-        let candidates = Array(CandidateFusion.fuse(hits).prefix(aiCandidateLimit).map(\.work))
-        guard !candidates.isEmpty else {
+        var fused = CandidateFusion.fuse(hits)
+        guard !fused.isEmpty else {
             let errors = laneResults.compactMap(\.error)
             throw AISearchPipelineError.candidateFetch(
                 errors.isEmpty
@@ -1968,9 +1993,110 @@ final class SearchStore: ObservableObject {
                     : errors.joined(separator: "；")
             )
         }
+        let citationSeeds = fused.filter {
+            guard let kind = $0.work.nonPrimaryPublicationKind else { return false }
+            return kind == .review || kind == .metaAnalysis
+        }.prefix(2).map(\.work)
+        if !citationSeeds.isEmpty {
+            let citationWorks = await client.citationNeighbors(
+                for: citationSeeds,
+                relevanceQuery: plan.searchQuery,
+                apiKey: apiKey,
+                referencesPerSeed: 200,
+                citationsPerSeed: 40
+            )
+            if !citationWorks.isEmpty {
+                let citationHits = citationWorks.enumerated().map { offset, work in
+                    SearchCandidateHit(
+                        work: work,
+                        source: .citation,
+                        lane: 0,
+                        rank: offset + 1
+                    )
+                }
+                fused = CandidateFusion.fuse(hits + citationHits)
+            }
+        }
+        let preTriage = CandidatePoolSelector.select(
+            from: fused,
+            decisions: [:],
+            profile: plan.questionProfile,
+            limit: min(triagePoolLimit, fused.count),
+            unclearReserve: min(triagePoolLimit, fused.count),
+            backgroundReserve: min(20, triagePoolLimit)
+        )
+        let preTriageIDs = Set(preTriage.map(\.id))
+        let triageFused = fused.filter { preTriageIDs.contains($0.work.id) }
+        let decisions = await triageCandidatePool(
+            triageFused.map(\.work),
+            originalRequest: originalRequest,
+            profile: plan.questionProfile,
+            configuration: configuration
+        )
+        let candidates = CandidatePoolSelector.select(
+            from: triageFused,
+            decisions: decisions,
+            profile: plan.questionProfile,
+            limit: aiCandidateLimit
+        )
+
         let failed = laneResults.filter { $0.error != nil }.count
         let notice = failed > 0 ? "部分检索通道暂时不可用，已用成功来源继续。" : nil
         return (candidates, notice, nil)
+    }
+
+    private func triageCandidatePool(
+        _ works: [Work],
+        originalRequest: String,
+        profile: ResearchQuestionProfile?,
+        configuration: AIProviderConfiguration
+    ) async -> [Int: AICandidateTriageOutput] {
+        guard !works.isEmpty else { return [:] }
+        let ranges = Self.evidenceBatchRanges(
+            totalCount: works.count,
+            batchSize: candidateTriageBatchSize
+        )
+        let planner = aiQueryPlanner
+        var decisions: [Int: AICandidateTriageOutput] = [:]
+        await withTaskGroup(of: (Range<Int>, [AICandidateTriageOutput]?).self) { group in
+            var next = 0
+            func enqueue(_ range: Range<Int>) {
+                let batch = Array(works[range])
+                group.addTask {
+                    do {
+                        let output = try await planner.triageCandidateBatch(
+                            description: originalRequest,
+                            profile: profile,
+                            works: batch,
+                            configuration: configuration
+                        )
+                        return (range, output)
+                    } catch {
+                        return (range, nil)
+                    }
+                }
+            }
+            while next < min(candidateTriageMaxConcurrent, ranges.count) {
+                enqueue(ranges[next])
+                next += 1
+            }
+            for await (range, outputs) in group {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                for output in outputs ?? [] {
+                    let absolute = range.lowerBound + output.index
+                    guard range.contains(absolute) else { continue }
+                    decisions[absolute] = output.withIndex(absolute)
+                }
+                if next < ranges.count {
+                    enqueue(ranges[next])
+                    next += 1
+                }
+            }
+        }
+        return decisions
     }
 
     /// Best-effort PubMed discovery. Failures return an empty list so OpenAlex results
@@ -2173,7 +2299,7 @@ final class SearchStore: ObservableObject {
             return
         }
         guard !aiRankedWorks.isEmpty else { return }
-        await showAIPage(page, analyze: false)
+        showAIPage(page)
     }
 
     func retryGlobalEvidenceRanking() async {
@@ -2206,7 +2332,7 @@ final class SearchStore: ObservableObject {
             applyGlobalRankingFailure(candidates: candidates, message: error.localizedDescription)
         }
         guard generation == searchGeneration else { return }
-        await showAIPage(1, analyze: false)
+        showAIPage(1)
         scheduleCompletedStageSave()
     }
 
@@ -2293,16 +2419,17 @@ final class SearchStore: ObservableObject {
 
     private func showAIPage(
         _ page: Int,
-        analyze: Bool = true,
         persistStage: Bool = true
-    ) async {
+    ) {
         guard page >= 1 else { return }
+        let rankedWorks = aiRankedWorks.filter(matchesActiveResultFilters)
+        totalCount = rankedWorks.count
         let start = (page - 1) * pageSize
-        guard start < aiRankedWorks.count || (page == 1 && aiRankedWorks.isEmpty) else {
+        guard start < rankedWorks.count || (page == 1 && rankedWorks.isEmpty) else {
             return
         }
-        let end = min(start + pageSize, aiRankedWorks.count)
-        works = start < end ? Array(aiRankedWorks[start..<end]) : []
+        let end = min(start + pageSize, rankedWorks.count)
+        works = start < end ? Array(rankedWorks[start..<end]) : []
         currentPage = page
         evidence = EvidenceExtractor.extract(query: lastQuery, works: works)
         selection = works.first?.id
@@ -2310,15 +2437,58 @@ final class SearchStore: ObservableObject {
         fullTextDocument = nil
         passageHits = []
         passageQuery = lastQuery
-        corpusState = .idle
-        corpusDocuments = [:]
-        corpusHits = []
         if persistStage {
             scheduleCompletedStageSave()
         }
-        if analyze {
-            await analyzeCurrentPage()
+    }
+
+    private func applyActiveResultFilters() {
+        guard !lastQuery.isEmpty, !isLoading else { return }
+        showAIPage(1)
+    }
+
+    private func matchesActiveResultFilters(_ work: Work) -> Bool {
+        Self.matchesResultFilters(
+            work,
+            fromYear: fromYearEnabled ? fromYear : nil,
+            openAccessOnly: openAccessOnly
+        )
+    }
+
+    nonisolated static func matchesResultFilters(
+        _ work: Work,
+        fromYear: Int?,
+        openAccessOnly: Bool
+    ) -> Bool {
+        if openAccessOnly, !work.isOpenAccess {
+            return false
         }
+        if let fromYear {
+            guard let publicationYear = work.publicationYear,
+                  publicationYear >= fromYear else {
+                return false
+            }
+        }
+        return true
+    }
+
+    nonisolated static func enforcingSearchControls(
+        on plan: AISearchPlan,
+        fromYear: Int?,
+        openAccessOnly: Bool
+    ) -> AISearchPlan {
+        AISearchPlan(
+            searchQuery: plan.searchQuery,
+            fromYear: fromYear ?? plan.fromYear,
+            openAccessOnly: openAccessOnly || plan.openAccessOnly,
+            sort: plan.sort,
+            explanation: plan.explanation,
+            pubMedQuery: plan.pubMedQuery,
+            questionProfile: plan.questionProfile,
+            openAlexQueries: plan.openAlexQueries,
+            pubMedQueries: plan.pubMedQueries,
+            clinicalTrialsQueries: plan.clinicalTrialsQueries
+        )
     }
 
     private func ensureSearchIsActive(_ generation: Int) throws {
@@ -2557,81 +2727,6 @@ final class SearchStore: ObservableObject {
         )
     }
 
-    func analyzeCurrentPage() async {
-        let candidates = works
-        guard !candidates.isEmpty else { return }
-        corpusAnalysisGeneration &+= 1
-        let context = captureHistoryMutationContext()
-        corpusState = .loading(completed: 0, total: candidates.count)
-        corpusDocuments = [:]
-        corpusHits = []
-        var failures: [String] = []
-
-        var completed = 0
-        await withTaskGroup(of: (Work, FullTextDocument?, String?).self) { group in
-            for work in candidates {
-                group.addTask {
-                    do {
-                        let document = try await self.fullTextService.loadForPageAnalysis(
-                            work: work
-                        )
-                        return (work, document, nil)
-                    } catch {
-                        return (work, nil, error.localizedDescription)
-                    }
-                }
-            }
-
-            for await (work, document, error) in group {
-                guard isCurrentCorpusMutationContext(context) else {
-                    group.cancelAll()
-                    return
-                }
-                if let document,
-                   !document.source.isFullText || Self.fullTextDocument(document, matches: work) {
-                    corpusDocuments[work.id] = document
-                } else if let error {
-                    failures.append("\(work.title)：\(error)")
-                }
-                completed += 1
-                corpusState = .loading(completed: completed, total: candidates.count)
-            }
-        }
-
-        guard isCurrentCorpusMutationContext(context) else { return }
-        searchCorpus()
-        if corpusDocuments.isEmpty {
-            corpusState = .failed(
-                failures.isEmpty ? "没有取得可分析的正文或摘要。" : failures.joined(separator: "\n")
-            )
-        } else {
-            corpusState = .loaded
-        }
-    }
-
-    func searchCorpus() {
-        let cleanQuery = passageQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let activeQuery = cleanQuery.isEmpty ? lastQuery : cleanQuery
-        corpusHits = works.flatMap { work -> [CorpusPassageHit] in
-            guard let document = corpusDocuments[work.id] else { return [] }
-            return HybridRetriever.search(
-                query: activeQuery,
-                paragraphs: document.paragraphs,
-                limit: 4
-            ).map {
-                CorpusPassageHit(work: work, document: document, passage: $0)
-            }
-        }
-        .sorted {
-            if $0.passage.score == $1.passage.score {
-                return ($0.work.publicationYear ?? 0) > ($1.work.publicationYear ?? 0)
-            }
-            return $0.passage.score > $1.passage.score
-        }
-        .prefix(20)
-        .map { $0 }
-    }
-
     func open(_ url: URL?) {
         guard let url else { return }
         NSWorkspace.shared.open(url)
@@ -2655,20 +2750,6 @@ final class SearchStore: ObservableObject {
 
     private func evidenceReportText() -> String? {
         let activeQuery = passageQuery.isEmpty ? lastQuery : passageQuery
-        if !corpusHits.isEmpty {
-            let body = corpusHits.enumerated().map { index, hit in
-                "## [\(index + 1)] \(hit.work.title)\n\n"
-                    + "> \(hit.passage.paragraph.text)\n\n"
-                    + "- 定位：\(hit.passage.paragraph.locator)\n"
-                    + "- 来源：\(hit.document.source.title)\n"
-                    + "- 年份：\(hit.work.publicationYear.map(String.init) ?? "未知")\n"
-                    + "- 链接：\(hit.document.sourceURL ?? hit.work.landingPageURL?.absoluteString ?? hit.work.id)"
-            }.joined(separator: "\n\n")
-            return "# RagBio 证据报告\n\n"
-                + "**检索主题：** \(activeQuery)\n\n"
-                + "**方法：** 从 \(corpusDocuments.count) 篇论文的全文或摘要中进行本机混合检索；以下均为原文，不包含模型补写。\n\n"
-                + body
-        }
         if let document = fullTextDocument, !passageHits.isEmpty {
             let body = passageHits.prefix(10).enumerated().map { index, hit in
                 "## [\(index + 1)] \(document.title)\n\n"

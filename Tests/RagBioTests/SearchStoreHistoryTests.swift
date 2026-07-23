@@ -135,6 +135,138 @@ import Testing
         #expect(store.aiSecondRerankState == .completed(fullText: 0, abstractOnly: 25, retained: 25))
     }
 
+    @Test func searchControlsRemainReversibleAfterCompletedSearchWithoutNetworkOrReranking() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        let works = (1...25).map { index in
+            makeWork(
+                id: "https://openalex.org/W\(index)",
+                doi: "10.1000/filter-\(index)",
+                year: index <= 5 ? 2015 : 2024,
+                isOpenAccess: index <= 20
+            )
+        }
+        var record = makeRecord(
+            query: "completed local filters",
+            works: Array(works[5..<20]),
+            date: Date()
+        )
+        record.snapshot.rankedWorks = works
+        record.snapshot.candidateWorks = works
+        record.snapshot.totalCount = 15
+        record.snapshot.fromYearEnabled = true
+        record.snapshot.fromYear = 2020
+        record.snapshot.openAccessOnly = true
+        record.snapshot.completedAIStage = .globalEvidenceRanking
+        record.snapshot.aiScores = Dictionary(
+            uniqueKeysWithValues: works.enumerated().map { ($0.element.id, 100 - $0.offset) }
+        )
+        try await historyStore.bootstrap()
+        _ = try await historyStore.save(record)
+
+        RecordingURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RecordingURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let store = SearchStore(
+            client: OpenAlexClient(session: session),
+            fullTextService: FullTextService(session: session),
+            aiQueryPlanner: AIQueryPlanner(session: session),
+            historyStore: historyStore,
+            restoreOnInit: false
+        )
+        store.restoreHistoryRecord(record)
+        let scores = store.aiScores
+
+        #expect(store.totalCount == 15)
+        #expect(store.works.allSatisfy { $0.isOpenAccess })
+        #expect(store.works.allSatisfy { ($0.publicationYear ?? 0) >= 2020 })
+
+        store.setOpenAccessFilter(false)
+        #expect(store.totalCount == 20)
+
+        store.setFromYearFilterEnabled(false)
+        #expect(store.totalCount == 25)
+        await store.goToPage(2)
+        #expect(store.works.count == 5)
+        #expect(store.currentPage == 2)
+
+        store.setFromYearFilterEnabled(true)
+        store.setFromYearFilter(2025)
+        #expect(store.totalCount == 0)
+        #expect(store.works.isEmpty)
+        #expect(store.completedSearchFilteredToNoResults)
+
+        store.setFromYearFilterEnabled(false)
+        #expect(store.totalCount == 25)
+        #expect(store.aiScores == scores)
+        #expect(RecordingURLProtocol.requestCount == 0)
+    }
+
+    @Test func resultFiltersRequireKnownYearAndOpenAccess() {
+        let recentOpen = makeWork(year: 2024, isOpenAccess: true)
+        let recentClosed = makeWork(year: 2024, isOpenAccess: false)
+        let oldOpen = makeWork(year: 2015, isOpenAccess: true)
+        let unknownYear = makeWork(year: nil, isOpenAccess: true)
+
+        #expect(
+            SearchStore.matchesResultFilters(
+                recentOpen,
+                fromYear: 2020,
+                openAccessOnly: true
+            )
+        )
+        #expect(
+            !SearchStore.matchesResultFilters(
+                recentClosed,
+                fromYear: 2020,
+                openAccessOnly: true
+            )
+        )
+        #expect(
+            !SearchStore.matchesResultFilters(
+                oldOpen,
+                fromYear: 2020,
+                openAccessOnly: true
+            )
+        )
+        #expect(
+            !SearchStore.matchesResultFilters(
+                unknownYear,
+                fromYear: 2020,
+                openAccessOnly: false
+            )
+        )
+    }
+
+    @Test func checkedSearchControlsOverrideConflictingModelPlanFilters() {
+        let modelPlan = AISearchPlan(
+            searchQuery: "target",
+            fromYear: 2022,
+            openAccessOnly: false,
+            sort: .relevance,
+            explanation: "",
+            openAlexQueries: ["target"],
+            pubMedQueries: ["target[tiab]"],
+            clinicalTrialsQueries: ["target"]
+        )
+
+        let controlled = SearchStore.enforcingSearchControls(
+            on: modelPlan,
+            fromYear: 2018,
+            openAccessOnly: true
+        )
+
+        #expect(controlled.fromYear == 2018)
+        #expect(controlled.openAccessOnly)
+        #expect(controlled.openAlexQueries == modelPlan.openAlexQueries)
+        #expect(controlled.pubMedQueries == modelPlan.pubMedQueries)
+    }
+
     @Test func mountingRestoredSelectionDoesNotStartNetworkOrSummaryWork() async throws {
         let root = try makeTemporaryDirectory()
         let historyRoot = root.appendingPathComponent("SearchHistory")
@@ -483,7 +615,6 @@ import Testing
         let secondContext = store.captureHistoryMutationContext()
 
         #expect(firstContext.searchGeneration != secondContext.searchGeneration)
-        #expect(firstContext.corpusGeneration != secondContext.corpusGeneration)
         #expect(!store.isCurrentHistoryMutationContext(firstContext))
         #expect(try await historyStore.loadRecord(id: first.id).snapshot.revision == 0)
         #expect(store.currentHistoryID == second.id)
@@ -626,7 +757,6 @@ import Testing
         let clearedContext = store.captureHistoryMutationContext()
 
         #expect(!store.isCurrentHistoryMutationContext(context))
-        #expect(context.corpusGeneration != clearedContext.corpusGeneration)
         #expect(clearedContext.historyID == nil)
     }
 
@@ -932,9 +1062,6 @@ import Testing
         #expect(store.fullTextDocument == nil)
         #expect(store.passageHits.isEmpty)
         #expect(store.passageQuery.isEmpty)
-        #expect(store.corpusState == .idle)
-        #expect(store.corpusDocuments.isEmpty)
-        #expect(store.corpusHits.isEmpty)
         #expect(store.aiFullTextDocuments.isEmpty)
         #expect(store.fullTextReviewSummaries.isEmpty)
         #expect(store.fullTextReviewSummaryInProgress.isEmpty)
