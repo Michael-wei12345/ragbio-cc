@@ -1,5 +1,44 @@
 import Foundation
 
+enum BibliographicTitleResolver {
+    static let unavailableTitle = "Title unavailable"
+
+    static func preferred(articleTitle: String, vernacularTitle: String) -> String {
+        if !isPlaceholder(articleTitle) {
+            return articleTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if !isPlaceholder(vernacularTitle) {
+            return vernacularTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return unavailableTitle
+    }
+
+    static func isPlaceholder(_ title: String) -> Bool {
+        let normalized = normalizedForMatching(title)
+        return normalized.isEmpty || placeholderTitles.contains(normalized)
+    }
+
+    static func normalizedForMatching(_ title: String) -> String {
+        title
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+            .replacingOccurrences(
+                of: #"[^\p{L}\p{N}]+"#,
+                with: " ",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static let placeholderTitles: Set<String> = [
+        "not available",
+        "title not available",
+        "no title",
+        "no title available",
+        "untitled"
+    ]
+}
+
 /// Searches PubMed (NCBI E-utilities) and maps results into the app's `Work` model.
 ///
 /// PubMed is used as a second discovery source alongside OpenAlex. ESearch returns
@@ -122,14 +161,38 @@ struct PubMedClient {
         return delegate.articles
     }
 
-    private func get(_ url: URL, timeout: TimeInterval) async throws -> Data {
+    private func get(
+        _ url: URL,
+        timeout: TimeInterval,
+        maxAttempts: Int = 3
+    ) async throws -> Data {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw PubMedError.badStatus(-1) }
-        guard (200..<300).contains(http.statusCode) else { throw PubMedError.badStatus(http.statusCode) }
-        return data
+        var lastError: Error?
+        for attempt in 0..<maxAttempts {
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw PubMedError.badStatus(-1)
+                }
+                if (200..<300).contains(http.statusCode) { return data }
+                let error = PubMedError.badStatus(http.statusCode)
+                guard [429, 503].contains(http.statusCode), attempt < maxAttempts - 1 else {
+                    throw error
+                }
+                lastError = error
+                let delay = http.value(forHTTPHeaderField: "Retry-After")
+                    .flatMap(Int.init)
+                    .map { min(30, max(1, $0)) }
+                    ?? min(8, 1 << attempt)
+                try await Task.sleep(for: .seconds(delay))
+            } catch let error as URLError where attempt < maxAttempts - 1 {
+                lastError = error
+                try await Task.sleep(for: .seconds(min(8, 1 << attempt)))
+            }
+        }
+        throw lastError ?? PubMedError.badStatus(-1)
     }
 
     // MARK: - Mapping
@@ -160,10 +223,15 @@ struct PubMedClient {
             ? nil
             : article.abstractParts.joined(separator: "\n\n")
 
+        let title = BibliographicTitleResolver.preferred(
+            articleTitle: article.title,
+            vernacularTitle: article.vernacularTitle
+        )
+
         return Work(
             id: "https://pubmed.ncbi.nlm.nih.gov/\(article.pmid)",
             doi: normalizedDOI,
-            title: article.title.isEmpty ? "(无标题)" : article.title,
+            title: title,
             publicationDate: publicationDate,
             publicationYear: year,
             citedByCount: 0,
@@ -195,6 +263,7 @@ struct PubMedClient {
 private struct PubMedArticle {
     var pmid = ""
     var title = ""
+    var vernacularTitle = ""
     var abstractParts: [String] = []
     var journal = ""
     var year = ""
@@ -224,7 +293,7 @@ private final class PubMedEFetchParser: NSObject, XMLParserDelegate {
     private var elocationType: String?
 
     private let clearOnStart: Set<String> = [
-        "ArticleTitle", "AbstractText", "PMID", "LastName", "ForeName",
+        "ArticleTitle", "VernacularTitle", "AbstractText", "PMID", "LastName", "ForeName",
         "Initials", "CollectiveName", "Year", "MedlineDate", "Title",
         "Language", "PublicationType", "ArticleId", "ELocationID"
     ]
@@ -281,6 +350,8 @@ private final class PubMedEFetchParser: NSObject, XMLParserDelegate {
             }
         case "ArticleTitle":
             if current?.title.isEmpty == true { current?.title = text }
+        case "VernacularTitle":
+            if current?.vernacularTitle.isEmpty == true { current?.vernacularTitle = text }
         case "AbstractText":
             if inAbstract, !text.isEmpty {
                 if let label = abstractLabel, !label.isEmpty {

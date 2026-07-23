@@ -178,7 +178,7 @@ import Testing
             SearchHistoryAIStage.completed(
                 coarse: .completed(candidates: 8, retained: 5),
                 evidence: .completed(fullText: 2, abstractOnly: 3, retained: 5)
-            ) == .evidenceRanking
+            ) == .globalEvidenceRanking
         )
     }
 }

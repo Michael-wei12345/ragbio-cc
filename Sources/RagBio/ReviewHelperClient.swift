@@ -20,6 +20,7 @@ final class ReviewHelperClient: @unchecked Sendable {
                 do {
                     let process = try processFactory()
                     setActive(process)
+                    try Task.checkCancellation()
                     try process.start()
                     try process.write(command.jsonLine())
                     let stderrDrain = Task {

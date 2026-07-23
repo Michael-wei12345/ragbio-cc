@@ -93,11 +93,17 @@ private struct SidebarView: View {
                         Task { await store.search() }
                     }
                 }
+            } else if store.completedGlobalRankingWithNoResults {
+                EmptyStateView(
+                    title: "没有论文达到 5% 最低相关度",
+                    systemImage: "line.3.horizontal.decrease.circle",
+                    description: "可以调整研究问题或检索限制后重试。"
+                )
             } else if store.works.isEmpty {
                 EmptyStateView(
                     title: "检索学术文献",
                     systemImage: "books.vertical",
-                    description: "输入主题、疾病、基因或方法名称。结果直接来自 OpenAlex。"
+                    description: "输入研究问题；结果来自 PubMed、OpenAlex 和 ClinicalTrials.gov。"
                 )
             } else {
                 resultsList
@@ -110,23 +116,25 @@ private struct SidebarView: View {
         case let .fetchingEvidence(completed, total):
             return "正在准备摘要与缓存证据 \(completed)/\(total)…"
         case .rankingEvidence:
-            return "AI 正在精排第 \(store.currentPage) 页全文证据…"
+            return "正在分批分析全部候选的证据…"
+        case .calibrating:
+            return "正在统一校准全部候选的相关度…"
         case let .refiningFullText(completed, total):
-            return "结果已可用，后台补强全文 \(completed)/\(total)…"
+            return "正在获取全文证据 \(completed)/\(total)…"
         default:
             break
         }
         switch store.aiRerankState {
         case .fetchingCandidates:
-            return "正在获取最多 60 篇候选论文…"
-        case let .localReady(candidates):
-            return "已恢复 \(candidates) 篇历史候选；重新检索后会按摘要排序…"
+            return "正在并行检索多个文献来源…"
+        case .localReady:
+            return "已恢复历史候选；可重新进行全局精排…"
         case let .ranking(completed, total):
-            return "AI 正在按全部摘要排序 \(completed)/\(total)…"
-        case let .failed(_, candidates):
-            return "候选排序失败，当前保留 \(candidates) 篇历史结果…"
+            return "正在分析候选 \(completed)/\(total)…"
+        case .failed:
+            return "候选排序失败，正在保留可恢复的历史结果…"
         default:
-            return "正在检索 OpenAlex…"
+            return "正在检索多个文献来源…"
         }
     }
 
@@ -148,16 +156,16 @@ private struct SidebarView: View {
                     Text("等待分析")
                 }
                 switch store.aiSecondRerankState {
-                case let .completed(fullText, abstractOnly, retained):
-                    Text("证据精排 \(fullText + abstractOnly) 篇 · 全部保留 \(retained) 篇")
+                case .completed:
+                    Text("全局精排完成")
                 default:
                     switch store.aiRerankState {
                     case let .localReady(candidates):
                         Text("已恢复 \(candidates) 篇历史候选")
-                    case let .completed(candidates, retained):
-                        Text("AI 摘要排序 \(candidates) 篇 · 全部保留 \(retained) 篇")
-                    case let .failed(_, candidates):
-                        Text("候选排序未完成 · 当前保留 \(candidates) 篇")
+                    case .completed:
+                        Text("全局精排完成")
+                    case .failed:
+                        Text("候选排序未完成")
                     default:
                         Text("约 \(store.totalCount.formatted()) 条结果")
                     }
@@ -260,12 +268,12 @@ private struct SearchHeader: View {
 
             switch store.aiRerankState {
             case .fetchingCandidates:
-                Label("正在获取最多 60 篇候选论文", systemImage: "tray.and.arrow.down")
+                Label("正在并行检索多个文献来源", systemImage: "tray.and.arrow.down")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case let .localReady(candidates):
                 Label(
-                    "已恢复 \(candidates) 篇历史候选；重新检索后会按全部摘要排序",
+                    "已恢复 \(candidates) 篇历史候选；可重新进行全局精排",
                     systemImage: "bolt"
                 )
                 .font(.caption)
@@ -273,19 +281,14 @@ private struct SearchHeader: View {
             case let .ranking(completed, total):
                 HStack {
                     ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                    Text("AI 摘要排序 \(completed)/\(total)")
+                    Text("分析候选 \(completed)/\(total)")
                         .font(.caption.monospacedDigit())
                 }
-            case let .completed(candidates, retained):
+            case .completed:
+                EmptyView()
+            case let .failed(message, _):
                 Label(
-                    "AI 已按全部摘要排序 \(candidates) 篇候选，列表保留 \(retained) 篇",
-                    systemImage: "checkmark.circle"
-                )
-                .font(.caption)
-                .foregroundStyle(.green)
-            case let .failed(message, candidates):
-                Label(
-                    "\(message)，当前保留 \(candidates) 篇候选",
+                    message,
                     systemImage: "info.circle"
                 )
                 .font(.caption)
@@ -305,29 +308,39 @@ private struct SearchHeader: View {
                 HStack {
                     ProgressView()
                         .controlSize(.small)
-                    Text("第 \(store.currentPage) 页 AI 全文精排中…")
+                    Text("正在分批分析全部候选的证据…")
+                        .font(.caption)
+                }
+            case .calibrating:
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在统一评分…")
                         .font(.caption)
                 }
             case let .refiningFullText(completed, total):
                 HStack {
                     ProgressView(value: Double(completed), total: Double(max(total, 1)))
-                    Text("结果已显示 · 后台补全文 \(completed)/\(total)")
+                    Text("获取全文证据 \(completed)/\(total)")
                         .font(.caption.monospacedDigit())
                 }
-            case let .completed(fullText, abstractOnly, retained):
+            case .completed:
                 Label(
-                    "第 \(store.currentPage) 页 AI 全文精排完成：\(fullText) 篇使用全文段落，\(abstractOnly) 篇仅用摘要；列表仍保留 \(retained) 篇",
-                    systemImage: "text.magnifyingglass"
+                    "全局精排完成",
+                    systemImage: "checkmark.circle"
                 )
                 .font(.caption)
                 .foregroundStyle(.green)
             case let .failed(message):
-                Label(
-                    message,
-                    systemImage: "exclamationmark.triangle"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
+                HStack(alignment: .firstTextBaseline) {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Button("重试") {
+                        Task { await store.retryGlobalEvidenceRanking() }
+                    }
+                    .font(.caption)
+                }
             case .idle:
                 EmptyView()
             }
@@ -1783,11 +1796,11 @@ private struct EvidenceFooter: View {
             Label(
                 store.fullTextDocument?.source.isFullText == true
                     ? "当前论文已读取全文"
-                    : "\(store.abstractCoverage)/\(store.works.count) 篇有摘要证据",
+                    : "本页 \(store.abstractCoverage)/\(store.works.count) 篇有摘要证据",
                 systemImage: "checkmark.shield"
             )
             Spacer()
-            Text("检索：OpenAlex + PubMed · 当前论文：\(store.fullTextDocument?.source.title ?? "摘要")")
+            Text("检索：PubMed + OpenAlex + ClinicalTrials.gov · 当前论文：\(store.fullTextDocument?.source.title ?? "摘要")")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -1810,6 +1823,9 @@ struct SettingsView: View {
     @State private var unpaywallStatus: SourceValidationState = .idle
     @State private var europePMCStatus: SourceValidationState = .idle
     @State private var grobidStatus: SourceValidationState = .idle
+    @State private var cacheSizeText = "正在计算…"
+    @State private var isClearingCache = false
+    @State private var showClearCacheConfirmation = false
     @AppStorage(SettingsKeys.activeAIProvider)
     private var activeAIProviderRaw = AIProvider.deepSeek.rawValue
 
@@ -1818,7 +1834,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 14) {
                 Text("大模型与 AI 搜索")
                     .font(.title2.bold())
-                Text("选择一个启用的厂商。API Key、模型和接口地址会保存在本机配置中。AI 负责理解描述和重排候选，论文结果仍来自 OpenAlex。")
+                Text("选择一个启用的厂商。API Key、模型和接口地址会保存在本机配置中。AI 负责理解描述和重排候选，论文与试验记录来自 PubMed、OpenAlex 和 ClinicalTrials.gov。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -1992,10 +2008,67 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Divider()
+                    .padding(.vertical, 4)
+
+                Text("本地缓存")
+                    .font(.title2.bold())
+                GroupBox {
+                    HStack(alignment: .center, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("论文证据缓存")
+                                .font(.headline)
+                            Text("当前占用 \(cacheSizeText) · 最多 10 GB。达到上限或磁盘空间不足时，会自动删除最早未使用的缓存。搜索历史和 Use 选择不会被删除。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if isClearingCache {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Button("清理缓存…", role: .destructive) {
+                                showClearCacheConfirmation = true
+                            }
+                        }
+                    }
+                    .padding(4)
+                }
             }
         }
         .padding(20)
         .frame(width: 720, height: 780)
+        .task { await refreshCacheSize() }
+        .confirmationDialog(
+            "清理本地缓存？",
+            isPresented: $showClearCacheConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("清理缓存", role: .destructive) {
+                Task { await clearCache() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将删除已提取的全文和可重新生成的检索缓存，但不会删除搜索历史、Use 选择或导出的文件。")
+        }
+    }
+
+    @MainActor
+    private func refreshCacheSize() async {
+        let bytes = await FullTextCache().sizeInBytes()
+        cacheSizeText = ByteCountFormatter.string(
+            fromByteCount: bytes,
+            countStyle: .file
+        )
+    }
+
+    @MainActor
+    private func clearCache() async {
+        isClearingCache = true
+        let cache = FullTextCache()
+        await cache.removeAll()
+        await refreshCacheSize()
+        isClearingCache = false
     }
 }
 

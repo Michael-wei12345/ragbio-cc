@@ -72,6 +72,7 @@ struct OpenAlexClient {
 
         var lastError: Error?
         for attempt in 0..<maxAttempts {
+            var retryDelay = attempt == 0 ? 1 : 3
             do {
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse else {
@@ -89,6 +90,10 @@ struct OpenAlexClient {
                     throw error
                 }
                 lastError = error
+                if let raw = http.value(forHTTPHeaderField: "Retry-After"),
+                   let seconds = Int(raw) {
+                    retryDelay = min(30, max(1, seconds))
+                }
             } catch let error as URLError
             where [
                 .timedOut, .networkConnectionLost, .notConnectedToInternet,
@@ -96,7 +101,7 @@ struct OpenAlexClient {
             ].contains(error.code) && attempt < maxAttempts - 1 {
                 lastError = error
             }
-            try await Task.sleep(for: .seconds(attempt == 0 ? 1 : 3))
+            try await Task.sleep(for: .seconds(retryDelay))
         }
         throw lastError ?? SearchError.invalidResponse
     }

@@ -1,7 +1,13 @@
 import AppKit
 import Combine
 import Foundation
+import OSLog
 import UniformTypeIdentifiers
+
+private let searchPerformanceLogger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.local.RagBio",
+    category: "SearchPerformance"
+)
 
 @MainActor
 final class SearchStore: ObservableObject {
@@ -45,6 +51,7 @@ final class SearchStore: ObservableObject {
     @Published private(set) var aiReasons: [String: String] = [:]
     @Published private(set) var aiScores: [String: Int] = [:]
     @Published private(set) var aiEvidenceLevels: [String: String] = [:]
+    @Published private(set) var evidenceCards: [String: StructuredEvidenceCard] = [:]
     @Published private(set) var aiSearchNotice: String?
     @Published private(set) var pubMedNotice: String?
     @Published private(set) var searchTimingSummary: String?
@@ -76,11 +83,12 @@ final class SearchStore: ObservableObject {
 
     private let client: OpenAlexClient
     private let pubMedClient = PubMedClient()
+    private let clinicalTrialsClient = ClinicalTrialsClient()
     private let fullTextService: FullTextService
     private let aiQueryPlanner: AIQueryPlanner
     private let historyStore: SearchHistoryStore
     private var aiRankedWorks: [Work] = []
-    private var aiEnhancementTask: Task<Void, Never>?
+    private var aiCandidateWorks: [Work] = []
     private var searchGeneration = 0
     private var corpusAnalysisGeneration = 0
     private var historyRevision = 0
@@ -90,24 +98,13 @@ final class SearchStore: ObservableObject {
     private var useMutationTask: Task<Void, Never>?
     private var isRestoringHistory = false
     let pageSize = 20
-    private let aiCandidateLimit = 60
+    private let aiCandidateLimit = 120
     private let aiCandidatePageSize = 60
-    private let aiAbstractRankingBatchSize = 20
-    private typealias AbstractRankResult = (
-        work: Work,
-        score: Int,
-        relevant: Bool,
-        reason: String,
-        order: Int
-    )
-    private typealias EvidenceRankResult = (
-        work: Work,
-        score: Int,
-        relevant: Bool,
-        reason: String,
-        hasFullText: Bool,
-        order: Int
-    )
+    private let aiEvidenceBatchSize = 12
+    private let evidenceAnalysisMaxConcurrent = 6
+    private let fullTextMaxConcurrent = 12
+    private let minimumGlobalRelevanceScore = 5
+    nonisolated static let maximumNewEmbeddingsPerSearch = 500
 
     struct HistoryMutationContext: Equatable {
         let searchGeneration: Int
@@ -241,6 +238,7 @@ final class SearchStore: ObservableObject {
             openAccessOnly: openAccessOnly,
             allWorks: works,
             rankedWorks: aiRankedWorks,
+            candidateWorks: aiCandidateWorks,
             totalCount: totalCount,
             currentPage: currentPage,
             selectedWorkID: selection,
@@ -248,6 +246,7 @@ final class SearchStore: ObservableObject {
             aiReasons: aiReasons,
             aiScores: aiScores,
             aiEvidenceLevels: aiEvidenceLevels,
+            evidenceCards: evidenceCards,
             aiSearchNotice: aiSearchNotice,
             pubMedNotice: pubMedNotice,
             searchTimingSummary: searchTimingSummary,
@@ -274,6 +273,7 @@ final class SearchStore: ObservableObject {
         openAccessOnly = snapshot.openAccessOnly
         works = snapshot.allWorks
         aiRankedWorks = snapshot.rankedWorks
+        aiCandidateWorks = snapshot.candidateWorks
         totalCount = snapshot.totalCount
         currentPage = snapshot.currentPage
         selection = snapshot.selectedWorkID
@@ -282,6 +282,7 @@ final class SearchStore: ObservableObject {
         aiReasons = snapshot.aiReasons
         aiScores = snapshot.aiScores
         aiEvidenceLevels = snapshot.aiEvidenceLevels
+        evidenceCards = snapshot.evidenceCards
         aiSearchNotice = snapshot.aiSearchNotice?.contains("粗排") == true
             ? nil
             : snapshot.aiSearchNotice
@@ -336,9 +337,44 @@ final class SearchStore: ObservableObject {
                 retained: snapshot.rankedWorks.count
             )
             aiSecondRerankState = .idle
+        case .globalEvidenceRanking:
+            aiRerankState = .completed(
+                candidates: max(snapshot.candidateWorks.count, candidates),
+                retained: snapshot.rankedWorks.count
+            )
+            let fullText = snapshot.rankedWorks.filter {
+                snapshot.aiEvidenceLevels[$0.id]?.hasPrefix("全文") == true
+            }.count
+            aiSecondRerankState = .completed(
+                fullText: fullText,
+                abstractOnly: snapshot.rankedWorks.count - fullText,
+                retained: snapshot.rankedWorks.count
+            )
         }
-        if pageHasCompletedFineRanking(currentPage) {
-            restoreFineRankingState(for: currentPage)
+        if case .idle = aiSecondRerankState {
+            let start = max(0, (currentPage - 1) * pageSize)
+            let end = min(start + pageSize, snapshot.rankedWorks.count)
+            if start < end {
+                let pageLevels = snapshot.rankedWorks[start..<end].compactMap {
+                    snapshot.aiEvidenceLevels[$0.id]
+                }
+                if pageLevels.count == end - start,
+                   pageLevels.allSatisfy({ $0.hasPrefix("本地") }) {
+                    aiSecondRerankState = .failed(
+                        "第 \(currentPage) 页 AI 全文精排此前失败。当前使用本地全文证据排序。"
+                    )
+                } else if pageLevels.count == end - start,
+                          pageLevels.allSatisfy({
+                              $0.hasPrefix("AI 全文精排") || $0.hasPrefix("AI 摘要精排")
+                          }) {
+                    let fullText = pageLevels.filter { $0.contains("全文") }.count
+                    aiSecondRerankState = .completed(
+                        fullText: fullText,
+                        abstractOnly: pageLevels.count - fullText,
+                        retained: snapshot.rankedWorks.count
+                    )
+                }
+            }
         }
     }
 
@@ -361,8 +397,6 @@ final class SearchStore: ObservableObject {
     }
 
     private func invalidateAsyncWork() {
-        aiEnhancementTask?.cancel()
-        aiEnhancementTask = nil
         advanceSearchGeneration()
         corpusAnalysisGeneration &+= 1
     }
@@ -381,8 +415,6 @@ final class SearchStore: ObservableObject {
             fromYear: fromYear,
             openAccessOnly: openAccessOnly
         )
-        aiEnhancementTask?.cancel()
-        aiEnhancementTask = nil
         advanceSearchGeneration()
         let generation = searchGeneration
         let normalized = SearchQueryIdentity.normalize(displayQuery)
@@ -439,6 +471,7 @@ final class SearchStore: ObservableObject {
         }
         works = []
         aiRankedWorks = []
+        aiCandidateWorks = []
         totalCount = 0
         currentPage = 1
         selection = nil
@@ -452,6 +485,7 @@ final class SearchStore: ObservableObject {
         aiReasons = [:]
         aiScores = [:]
         aiEvidenceLevels = [:]
+        evidenceCards = [:]
         aiSearchNotice = nil
         pubMedNotice = nil
         searchTimingSummary = nil
@@ -1052,6 +1086,12 @@ final class SearchStore: ObservableObject {
         works.filter { $0.abstractText != nil }.count
     }
 
+    var completedGlobalRankingWithNoResults: Bool {
+        guard !aiCandidateWorks.isEmpty, aiRankedWorks.isEmpty else { return false }
+        if case .completed = aiSecondRerankState { return true }
+        return false
+    }
+
     var totalPages: Int {
         min(500, max(1, Int(ceil(Double(totalCount) / Double(pageSize)))))
     }
@@ -1119,20 +1159,19 @@ final class SearchStore: ObservableObject {
                 currentSort: sort,
                 currentFromYear: currentFromYear,
                 currentOpenAccessOnly: openAccessOnly,
-                timeoutSeconds: 6
+                timeoutSeconds: 22
             )
             try ensureSearchIsActive(generation)
             let planningSeconds = elapsedSeconds(since: planningStartedAt)
 
             aiRerankState = .fetchingCandidates
             let apiKey = CredentialStore.string(for: .openAlexAPIKey)
-            guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                throw AISearchPipelineError.openAlexKeyRequired
-            }
             let candidateStartedAt = Date()
             let candidateResult = try await fetchAICandidates(
                 plan: plan,
-                apiKey: apiKey
+                apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? nil
+                    : apiKey
             )
             try ensureSearchIsActive(generation)
             let candidates = candidateResult.works
@@ -1166,41 +1205,40 @@ final class SearchStore: ObservableObject {
             articleSummaryErrors = [:]
             aiVisiblePageFullTextInProgress = []
             aiVisiblePageFullTextFailures = [:]
+            evidenceCards = [:]
+            aiCandidateWorks = candidates
             aiRankedWorks = candidates
             lastQuery = plan.searchQuery
             totalCount = candidates.count
             currentPage = 1
-            aiRerankState = .ranking(completed: 0, total: candidates.count)
-            let abstractRankingSeconds = try await rankAllCandidateAbstracts(
-                candidates,
-                originalRequest: displayQuery,
-                configuration: configuration,
-                generation: generation
-            )
-            try ensureSearchIsActive(generation)
-            totalCount = aiRankedWorks.count
+            aiRerankState = .localReady(candidates: candidates.count)
+            do {
+                let ranking = try await rankAllCandidatesWithEvidence(
+                    candidates,
+                    originalRequest: displayQuery,
+                    retrievalQuery: plan.searchQuery,
+                    plan: plan,
+                    configuration: configuration,
+                    generation: generation
+                )
+                try ensureSearchIsActive(generation)
+                searchTimingSummary = ranking.calibrated
+                    ? "全局精排 \(ranking.seconds) 秒 · AI 理解 \(planningSeconds) 秒 · 候选获取 \(candidateSeconds) 秒"
+                    : "本地证据排序 \(ranking.seconds) 秒 · 统一评分未完成 · 可重试"
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try ensureSearchIsActive(generation)
+                applyGlobalRankingFailure(candidates: candidates, message: error.localizedDescription)
+                searchTimingSummary = "全局精排未完成 · AI 理解 \(planningSeconds) 秒 · 候选获取 \(candidateSeconds) 秒"
+            }
             isLoading = false
             await showAIPage(1, analyze: false, persistStage: false)
-            searchTimingSummary = "首屏 \(elapsedSeconds(since: searchStartedAt)) 秒 · AI 理解 \(planningSeconds) 秒 · OpenAlex \(candidateSeconds) 秒 · 摘要排序 \(abstractRankingSeconds) 秒"
             await commitFirstUsableHistoryStage(
                 displayQuery: displayQuery,
                 startedAt: searchStartedAt,
                 generation: generation
             )
-            guard generation == searchGeneration,
-                  historyErrorMessage == nil else { return }
-            analyzeVisiblePageInBackground()
-            aiEnhancementTask = Task { [weak self] in
-                guard let self else { return }
-                await self.continueAIEnhancedRanking(
-                    generation: generation,
-                    originalRequest: displayQuery,
-                    retrievalQuery: plan.searchQuery,
-                    configuration: configuration,
-                    searchStartedAt: searchStartedAt,
-                    abstractRankingSeconds: abstractRankingSeconds
-                )
-            }
         } catch is CancellationError {
             guard generation == searchGeneration else { return }
             aiRerankState = .idle
@@ -1219,111 +1257,363 @@ final class SearchStore: ObservableObject {
         }
     }
 
-    private func continueAIEnhancedRanking(
-        generation: Int,
-        originalRequest: String,
-        retrievalQuery: String,
-        configuration: AIProviderConfiguration,
-        searchStartedAt: Date,
-        abstractRankingSeconds: String
-    ) async {
-        do {
-            try ensureSearchIsActive(generation)
-            let rankedResultsSeconds = elapsedSeconds(since: searchStartedAt)
-            let evidenceTiming = try await rerankPageWithFullTextEvidence(
-                page: 1,
-                originalRequest: originalRequest,
-                retrievalQuery: retrievalQuery,
-                configuration: configuration,
-                generation: generation
-            )
-            try ensureSearchIsActive(generation)
-            totalCount = aiRankedWorks.count
-            searchTimingSummary = evidenceTiming.usedAI
-                ? "首屏 \(rankedResultsSeconds) 秒 · 摘要排序 \(abstractRankingSeconds) 秒 · 全文获取 \(evidenceTiming.fullText) 秒 · AI 全文精排 \(evidenceTiming.ai) 秒"
-                : "首屏 \(rankedResultsSeconds) 秒 · 摘要排序 \(abstractRankingSeconds) 秒 · 全文获取 \(evidenceTiming.fullText) 秒 · AI 全文精排失败 · 本地证据排序"
-            scheduleCompletedStageSave()
-        } catch is CancellationError {
-            return
-        } catch {
-            do {
-                try ensureSearchIsActive(generation)
-                aiSecondRerankState = .failed(error.localizedDescription)
-            } catch {
-                return
-            }
-        }
-    }
-
-    private func rankAllCandidateAbstracts(
+    private func rankAllCandidatesWithEvidence(
         _ candidates: [Work],
         originalRequest: String,
+        retrievalQuery: String,
+        plan: AISearchPlan,
         configuration: AIProviderConfiguration,
         generation: Int
-    ) async throws -> String {
-        guard !candidates.isEmpty else { return "0.0" }
+    ) async throws -> (seconds: String, calibrated: Bool) {
+        guard !candidates.isEmpty else { return ("0.0", true) }
         let startedAt = Date()
-        let batches: [[(order: Int, work: Work)]] = Self.abstractRankingBatchRanges(
-            totalCount: candidates.count,
-            batchSize: aiAbstractRankingBatchSize
-        ).map { range in
-            candidates[range].enumerated().map { element in
-                (order: range.lowerBound + element.offset, work: element.element)
-            }
-        }
+        let apiKey = CredentialStore.string(for: .openAlexAPIKey)
+        let semanticScholarAPIKey = CredentialStore.string(for: .semanticScholarAPIKey)
+        let contactEmail = UserDefaults.standard.string(forKey: SettingsKeys.contactEmail)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let service = fullTextService
+        var documentsByID = aiFullTextDocuments
+        let pending = candidates.filter { documentsByID[$0.id] == nil }
+        var completed = candidates.count - pending.count
+        aiSecondRerankState = .refiningFullText(completed: completed, total: candidates.count)
 
-        // Each batch is limited to one visible page. The three batches run concurrently so the
-        // all-abstract ordering does not add a full model timeout for every page.
-        let planner = aiQueryPlanner
-        var rankedResults: [AbstractRankResult] = []
-        var completed = 0
-        try await withThrowingTaskGroup(of: [AbstractRankResult].self) { group in
-            for batch in batches {
+        await withTaskGroup(of: (Work, FullTextDocument?).self) { group in
+            var next = 0
+            func enqueue(_ work: Work) {
                 group.addTask {
-                    let inputs = batch.map {
-                        AIAbstractRankingInput(work: $0.work, abstract: $0.work.abstractText)
-                    }
-                    let outputs = try await planner.rankAbstractBatch(
-                        description: originalRequest,
-                        inputs: inputs,
-                        configuration: configuration
+                    let document = await Self.loadFullTextWithSoftTimeout(
+                        service: service,
+                        work: work,
+                        apiKey: apiKey,
+                        contactEmail: contactEmail,
+                        semanticScholarAPIKey: semanticScholarAPIKey,
+                        seconds: 6
                     )
-                    let resultsByIndex = Dictionary(
-                        uniqueKeysWithValues: outputs.map { ($0.index, $0) }
-                    )
-                    guard resultsByIndex.count == inputs.count else {
-                        throw AIPlannerError.invalidRanking
-                    }
-                    return try inputs.enumerated().map { index, input in
-                        guard let result = resultsByIndex[index] else {
-                            throw AIPlannerError.invalidRanking
-                        }
-                        return (
-                            work: input.work,
-                            score: min(100, max(0, result.score)),
-                            relevant: result.relevant,
-                            reason: result.reason,
-                            order: batch[index].order
-                        )
-                    }
+                    return (work, document)
                 }
             }
-            for try await batch in group {
-                try ensureSearchIsActive(generation)
-                rankedResults.append(contentsOf: batch)
-                completed += batch.count
-                aiRerankState = .ranking(completed: completed, total: candidates.count)
+            while next < min(fullTextMaxConcurrent, pending.count) {
+                enqueue(pending[next])
+                next += 1
+            }
+            for await (work, document) in group {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                if let document,
+                   document.source.isFullText,
+                   Self.fullTextDocument(document, matches: work) {
+                    documentsByID[work.id] = document
+                } else {
+                    aiVisiblePageFullTextFailures[work.id] =
+                        "No accessible full text was found automatically; ranking used the abstract."
+                }
+                completed += 1
+                aiSecondRerankState = .refiningFullText(
+                    completed: completed,
+                    total: candidates.count
+                )
+                if next < pending.count {
+                    enqueue(pending[next])
+                    next += 1
+                }
             }
         }
         try ensureSearchIsActive(generation)
-        guard rankedResults.count == candidates.count else {
-            throw AIPlannerError.invalidRanking
+        aiFullTextDocuments = documentsByID
+        searchPerformanceLogger.info(
+            "Full-text preparation finished candidates=\(candidates.count, privacy: .public) documents=\(documentsByID.count, privacy: .public) seconds=\(Date().timeIntervalSince(startedAt), privacy: .public)"
+        )
+
+        let evidenceQuery = Self.evidenceRetrievalQuery(
+            originalRequest: originalRequest,
+            retrievalQuery: retrievalQuery
+        )
+        let retrievalStartedAt = Date()
+        aiSecondRerankState = .fetchingEvidence(completed: 0, total: candidates.count)
+        let preparedQuery = await Task.detached(priority: .utility) {
+            HybridRetriever.prepare(query: evidenceQuery)
+        }.value
+        var inputs: [AIEvidenceRankingInput] = []
+        var generatedEmbeddingCount = 0
+        let fullTextDocumentCount = candidates.reduce(into: 0) { count, work in
+            if documentsByID[work.id]?.source.isFullText == true { count += 1 }
         }
-        applyAbstractRanking(rankedResults)
-        return elapsedSeconds(since: startedAt)
+        let maximumNewEmbeddingsPerDocument = Self.newEmbeddingAllowance(
+            fullTextDocumentCount: fullTextDocumentCount
+        )
+        let preparationBatchSize = 10
+        for start in stride(from: 0, to: candidates.count, by: preparationBatchSize) {
+            try ensureSearchIsActive(generation)
+            let end = min(start + preparationBatchSize, candidates.count)
+            let batchCandidates = Array(candidates[start..<end])
+            let batchInputs = await Task.detached(priority: .utility) {
+                await Self.makeEvidenceInputs(
+                    candidates: batchCandidates,
+                    documentsByID: documentsByID,
+                    preparedQuery: preparedQuery,
+                    maximumNewEmbeddingsPerDocument: maximumNewEmbeddingsPerDocument
+                )
+            }.value
+            inputs.append(contentsOf: batchInputs.inputs)
+            generatedEmbeddingCount += batchInputs.generatedEmbeddingCount
+            aiSecondRerankState = .fetchingEvidence(
+                completed: end,
+                total: candidates.count
+            )
+            await Task.yield()
+        }
+        searchPerformanceLogger.info(
+            "Passage retrieval finished candidates=\(candidates.count, privacy: .public) generated_embeddings=\(generatedEmbeddingCount, privacy: .public) per_document_limit=\(maximumNewEmbeddingsPerDocument, privacy: .public) seconds=\(Date().timeIntervalSince(retrievalStartedAt), privacy: .public)"
+        )
+        var cardsByID = evidenceCards
+        let missingRanges = Self.evidenceBatchRanges(
+            totalCount: inputs.count,
+            batchSize: aiEvidenceBatchSize
+        ).filter { range in
+            range.contains { cardsByID[inputs[$0].work.id] == nil }
+        }
+        let planner = aiQueryPlanner
+        var analyzed = inputs.count - missingRanges.reduce(0) { partial, range in
+            partial + range.filter { cardsByID[inputs[$0].work.id] == nil }.count
+        }
+        var freshlyAnalyzedIDs = Set<String>()
+        aiSecondRerankState = .rankingEvidence(completed: analyzed, total: inputs.count)
+
+        await withTaskGroup(of: (Range<Int>, [AIEvidenceCardOutput]?).self) { group in
+            var next = 0
+            func enqueue(_ range: Range<Int>) {
+                let batch = Array(inputs[range])
+                group.addTask {
+                    do {
+                        var outputs = try await planner.analyzeEvidenceBatch(
+                            description: originalRequest,
+                            profile: plan.questionProfile,
+                            inputs: batch,
+                            configuration: configuration
+                        )
+                        let returned = Set(outputs.map(\.index))
+                        let missing = batch.indices.filter { !returned.contains($0) }
+                        if !missing.isEmpty {
+                            let retryInputs = missing.map { batch[$0] }
+                            let retry = try await planner.analyzeEvidenceBatch(
+                                description: originalRequest,
+                                profile: plan.questionProfile,
+                                inputs: retryInputs,
+                                configuration: configuration
+                            )
+                            outputs += retry.compactMap { output in
+                                guard missing.indices.contains(output.index) else { return nil }
+                                return output.withIndex(missing[output.index])
+                            }
+                        }
+                        return (range, outputs)
+                    } catch {
+                        return (range, nil)
+                    }
+                }
+            }
+            while next < min(evidenceAnalysisMaxConcurrent, missingRanges.count) {
+                enqueue(missingRanges[next])
+                next += 1
+            }
+            for await (range, outputs) in group {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return
+                }
+                let byIndex = outputs.map {
+                    Dictionary(uniqueKeysWithValues: $0.map { ($0.index, $0) })
+                } ?? [:]
+                for absoluteIndex in range {
+                    let input = inputs[absoluteIndex]
+                    guard cardsByID[input.work.id] == nil else { continue }
+                    let local = LocalEvidenceCardBuilder.make(
+                        work: input.work,
+                        profile: plan.questionProfile,
+                        abstract: input.abstract,
+                        passages: input.passages,
+                        hasFullText: input.hasFullTextEvidence
+                    )
+                    let relativeIndex = absoluteIndex - range.lowerBound
+                    if let output = byIndex[relativeIndex] {
+                        cardsByID[input.work.id] = Self.evidenceCard(
+                            output: output,
+                            work: input.work,
+                            local: local
+                        )
+                    } else {
+                        cardsByID[input.work.id] = local
+                    }
+                    freshlyAnalyzedIDs.insert(input.work.id)
+                    analyzed += 1
+                }
+                aiSecondRerankState = .rankingEvidence(
+                    completed: min(analyzed, inputs.count),
+                    total: inputs.count
+                )
+                if next < missingRanges.count {
+                    enqueue(missingRanges[next])
+                    next += 1
+                }
+            }
+        }
+        try ensureSearchIsActive(generation)
+
+        let verificationIndices = inputs.indices.filter { index in
+            let input = inputs[index]
+            guard freshlyAnalyzedIDs.contains(input.work.id),
+                  let model = cardsByID[input.work.id] else { return false }
+            let local = LocalEvidenceCardBuilder.make(
+                work: input.work,
+                profile: plan.questionProfile,
+                abstract: input.abstract,
+                passages: input.passages,
+                hasFullText: input.hasFullTextEvidence
+            )
+            return Self.needsCoreMismatchVerification(model: model, local: local)
+        }
+        if !verificationIndices.isEmpty {
+            await withTaskGroup(of: (Int, AIEvidenceCardOutput?).self) { group in
+                var next = 0
+                func enqueue(_ index: Int) {
+                    let input = inputs[index]
+                    group.addTask {
+                        do {
+                            let output = try await planner.analyzeEvidenceBatch(
+                                description: originalRequest,
+                                profile: plan.questionProfile,
+                                inputs: [input],
+                                configuration: configuration
+                            ).first
+                            return (index, output)
+                        } catch {
+                            return (index, nil)
+                        }
+                    }
+                }
+                while next < min(evidenceAnalysisMaxConcurrent, verificationIndices.count) {
+                    enqueue(verificationIndices[next])
+                    next += 1
+                }
+                for await (index, output) in group {
+                    guard !Task.isCancelled else {
+                        group.cancelAll()
+                        return
+                    }
+                    let input = inputs[index]
+                    let local = LocalEvidenceCardBuilder.make(
+                        work: input.work,
+                        profile: plan.questionProfile,
+                        abstract: input.abstract,
+                        passages: input.passages,
+                        hasFullText: input.hasFullTextEvidence
+                    )
+                    if let output {
+                        let verified = Self.evidenceCard(
+                            output: output,
+                            work: input.work,
+                            local: local
+                        )
+                        cardsByID[input.work.id] = Self.protectingStrongLocalCoreMatches(
+                            in: verified,
+                            supportedBy: local
+                        )
+                    } else if let initial = cardsByID[input.work.id] {
+                        cardsByID[input.work.id] = Self.softeningUnverifiedCoreMismatches(
+                            in: initial,
+                            supportedBy: local
+                        )
+                    }
+                    if next < verificationIndices.count {
+                        enqueue(verificationIndices[next])
+                        next += 1
+                    }
+                }
+            }
+            try ensureSearchIsActive(generation)
+        }
+        searchPerformanceLogger.info(
+            "Evidence-card analysis finished candidates=\(candidates.count, privacy: .public) mismatch_verifications=\(verificationIndices.count, privacy: .public) seconds=\(Date().timeIntervalSince(retrievalStartedAt), privacy: .public)"
+        )
+
+        let cards = inputs.map { input in
+            cardsByID[input.work.id] ?? LocalEvidenceCardBuilder.make(
+                work: input.work,
+                profile: plan.questionProfile,
+                abstract: input.abstract,
+                passages: input.passages,
+                hasFullText: input.hasFullTextEvidence
+            )
+        }
+        evidenceCards = Dictionary(uniqueKeysWithValues: cards.map { ($0.workID, $0) })
+        let localScores = cards.map(EvidenceUsefulnessScorer.score)
+        aiSecondRerankState = .calibrating(total: candidates.count)
+
+        do {
+            var outputs = try await planner.calibrateGlobalScores(
+                description: originalRequest,
+                profile: plan.questionProfile,
+                cards: cards,
+                works: candidates,
+                localScores: localScores,
+                configuration: configuration
+            )
+            let returned = Set(outputs.map(\.index))
+            let missing = candidates.indices.filter { !returned.contains($0) }
+            if !missing.isEmpty {
+                let retry = try await planner.calibrateGlobalScores(
+                    description: originalRequest,
+                    profile: plan.questionProfile,
+                    cards: missing.map { cards[$0] },
+                    works: missing.map { candidates[$0] },
+                    localScores: missing.map { localScores[$0] },
+                    configuration: configuration
+                )
+                outputs += retry.compactMap { output in
+                    guard missing.indices.contains(output.index) else { return nil }
+                    return output.withIndex(missing[output.index])
+                }
+            }
+            try ensureSearchIsActive(generation)
+            let modelScores = try Self.validatedGlobalScores(
+                outputs,
+                candidateCount: candidates.count
+            )
+            let scoreByIndex = Self.anchoredGlobalScores(
+                modelScores: modelScores,
+                localScores: localScores,
+                cards: cards
+            )
+            applyGlobalScores(
+                candidates: candidates,
+                cards: cards,
+                scores: scoreByIndex,
+                completed: true
+            )
+            searchPerformanceLogger.info(
+                "Global calibration finished candidates=\(candidates.count, privacy: .public) seconds=\(Date().timeIntervalSince(startedAt), privacy: .public)"
+            )
+            return (elapsedSeconds(since: startedAt), true)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try ensureSearchIsActive(generation)
+            applyGlobalScores(
+                candidates: candidates,
+                cards: cards,
+                scores: Dictionary(uniqueKeysWithValues: localScores.enumerated().map { ($0, $1) }),
+                completed: false
+            )
+            aiSecondRerankState = .failed(
+                "统一评分未完成，当前使用本地证据卡排序；重试会复用已获取的证据。"
+            )
+            return (elapsedSeconds(since: startedAt), false)
+        }
     }
 
-    nonisolated static func abstractRankingBatchRanges(
+    nonisolated static func evidenceBatchRanges(
         totalCount: Int,
         batchSize: Int
     ) -> [Range<Int>] {
@@ -1333,25 +1623,217 @@ final class SearchStore: ObservableObject {
         }
     }
 
-    private func applyAbstractRanking(_ ranked: [AbstractRankResult]) {
-        let ordered = ranked.sorted {
-            if $0.relevant != $1.relevant { return $0.relevant && !$1.relevant }
-            if $0.score == $1.score { return $0.order < $1.order }
-            return $0.score > $1.score
+    nonisolated static func validatedGlobalScores(
+        _ outputs: [AIGlobalScoreOutput],
+        candidateCount: Int
+    ) throws -> [Int: Int] {
+        guard outputs.count == candidateCount,
+              Set(outputs.map(\.index)).count == candidateCount,
+              outputs.allSatisfy({ (0..<candidateCount).contains($0.index) }) else {
+            throw AIPlannerError.invalidRanking
         }
-        aiRankedWorks = ordered.map(\.work)
-        aiScores = Dictionary(uniqueKeysWithValues: ordered.map { ($0.work.id, $0.score) })
-        aiReasons = Dictionary(
-            uniqueKeysWithValues: ordered.map {
-                let reason = $0.reason.trimmingCharacters(in: .whitespacesAndNewlines)
-                return ($0.work.id, reason.isEmpty ? localPreviewReason(for: $0.work) : reason)
+        return Dictionary(uniqueKeysWithValues: outputs.map {
+            ($0.index, min(100, max(0, $0.score)))
+        })
+    }
+
+    nonisolated static func globallyRankedIndices(
+        scores: [Int: Int],
+        candidateCount: Int,
+        minimumScore: Int
+    ) -> [Int] {
+        (0..<candidateCount)
+            .compactMap { index -> (index: Int, score: Int)? in
+                guard let score = scores[index], score >= minimumScore else { return nil }
+                return (index, score)
             }
+            .sorted {
+                if $0.score == $1.score { return $0.index < $1.index }
+                return $0.score > $1.score
+            }
+            .map(\.index)
+    }
+
+    nonisolated static func anchoredGlobalScores(
+        modelScores: [Int: Int],
+        localScores: [Int],
+        cards: [StructuredEvidenceCard]
+    ) -> [Int: Int] {
+        guard localScores.count == cards.count else { return modelScores }
+        return Dictionary(uniqueKeysWithValues: cards.indices.compactMap { index in
+            guard let model = modelScores[index] else { return nil }
+            let blended = Int(
+                (Double(model) * 0.75 + Double(localScores[index]) * 0.25).rounded()
+            )
+            let card = cards[index]
+            let score = (card.population == .mismatch
+                || card.interventionOrExposure == .mismatch
+                || card.outcome == .mismatch)
+                ? min(4, blended)
+                : min(100, max(0, blended))
+            return (index, score)
+        })
+    }
+
+    nonisolated static func needsCoreMismatchVerification(
+        model: StructuredEvidenceCard,
+        local: StructuredEvidenceCard
+    ) -> Bool {
+        guard EvidenceUsefulnessScorer.score(local) >= 50 else { return false }
+        return (model.population == .mismatch && local.population != .unclear)
+            || (model.interventionOrExposure == .mismatch
+                && local.interventionOrExposure != .unclear)
+            || (model.outcome == .mismatch && local.outcome != .unclear)
+    }
+
+    nonisolated static func evidenceCard(
+        output: AIEvidenceCardOutput,
+        work: Work,
+        local: StructuredEvidenceCard
+    ) -> StructuredEvidenceCard {
+        StructuredEvidenceCard(
+            workID: work.id,
+            population: output.population,
+            interventionOrExposure: output.interventionOrExposure,
+            comparator: output.comparator,
+            outcome: output.outcome,
+            context: output.context,
+            role: resolvedEvidenceRole(output.role, for: work),
+            reportsEffectEstimate: output.reportsEffectEstimate,
+            reportsSampleSize: output.reportsSampleSize,
+            hasComparatorGroup: output.hasComparatorGroup,
+            reportsFollowUp: output.reportsFollowUp,
+            uniqueContribution: output.uniqueContribution,
+            confidence: local.confidence,
+            studyFamilyID: local.studyFamilyID,
+            evidenceBasis: local.evidenceBasis
         )
-        aiEvidenceLevels = Dictionary(
-            uniqueKeysWithValues: ordered.map { ($0.work.id, "AI 摘要排序") }
+    }
+
+    nonisolated static func softeningUnverifiedCoreMismatches(
+        in model: StructuredEvidenceCard,
+        supportedBy local: StructuredEvidenceCard
+    ) -> StructuredEvidenceCard {
+        func softened(_ modelValue: EvidenceMatch, _ localValue: EvidenceMatch) -> EvidenceMatch {
+            modelValue == .mismatch && localValue != .unclear ? .unclear : modelValue
+        }
+        return StructuredEvidenceCard(
+            workID: model.workID,
+            population: softened(model.population, local.population),
+            interventionOrExposure: softened(
+                model.interventionOrExposure,
+                local.interventionOrExposure
+            ),
+            comparator: model.comparator,
+            outcome: softened(model.outcome, local.outcome),
+            context: model.context,
+            role: model.role,
+            reportsEffectEstimate: model.reportsEffectEstimate,
+            reportsSampleSize: model.reportsSampleSize,
+            hasComparatorGroup: model.hasComparatorGroup,
+            reportsFollowUp: model.reportsFollowUp,
+            uniqueContribution: model.uniqueContribution,
+            confidence: model.confidence,
+            studyFamilyID: model.studyFamilyID,
+            evidenceBasis: model.evidenceBasis
         )
-        aiRerankState = .completed(candidates: ordered.count, retained: ordered.count)
-        aiSecondRerankState = .idle
+    }
+
+    nonisolated static func protectingStrongLocalCoreMatches(
+        in model: StructuredEvidenceCard,
+        supportedBy local: StructuredEvidenceCard
+    ) -> StructuredEvidenceCard {
+        guard EvidenceUsefulnessScorer.score(local) >= 50 else { return model }
+        func protected(_ modelValue: EvidenceMatch, _ localValue: EvidenceMatch) -> EvidenceMatch {
+            modelValue == .mismatch && localValue != .unclear ? .unclear : modelValue
+        }
+        return StructuredEvidenceCard(
+            workID: model.workID,
+            population: protected(model.population, local.population),
+            interventionOrExposure: protected(
+                model.interventionOrExposure,
+                local.interventionOrExposure
+            ),
+            comparator: model.comparator,
+            outcome: model.outcome,
+            context: model.context,
+            role: model.role,
+            reportsEffectEstimate: model.reportsEffectEstimate,
+            reportsSampleSize: model.reportsSampleSize,
+            hasComparatorGroup: model.hasComparatorGroup,
+            reportsFollowUp: model.reportsFollowUp,
+            uniqueContribution: model.uniqueContribution,
+            confidence: model.confidence,
+            studyFamilyID: model.studyFamilyID,
+            evidenceBasis: model.evidenceBasis
+        )
+    }
+
+    nonisolated static func resolvedEvidenceRole(
+        _ proposed: EvidenceRole,
+        for work: Work
+    ) -> EvidenceRole {
+        if work.id.lowercased().contains("clinicaltrials.gov") {
+            return .registry
+        }
+        guard let kind = work.nonPrimaryPublicationKind else { return proposed }
+        switch kind {
+        case .review, .metaAnalysis, .guideline, .consensus,
+             .retracted, .editorial, .comment, .letter:
+            return .background
+        case .studyProtocol:
+            return .protocolRecord
+        }
+    }
+
+    private func applyGlobalScores(
+        candidates: [Work],
+        cards: [StructuredEvidenceCard],
+        scores: [Int: Int],
+        completed: Bool
+    ) {
+        let ordered = Self.globallyRankedIndices(
+            scores: scores,
+            candidateCount: candidates.count,
+            minimumScore: minimumGlobalRelevanceScore
+        )
+        aiRankedWorks = ordered.map { candidates[$0] }
+        aiScores = Dictionary(uniqueKeysWithValues: ordered.map {
+            (candidates[$0].id, scores[$0] ?? 0)
+        })
+        aiReasons = [:]
+        aiEvidenceLevels = Dictionary(uniqueKeysWithValues: ordered.map { index in
+            let card = cards[index]
+            let label: String
+            switch card.confidence {
+            case .high: label = "全文证据"
+            case .medium: label = "摘要证据"
+            case .low: label = "仅元数据"
+            }
+            return (candidates[index].id, label)
+        })
+        totalCount = aiRankedWorks.count
+        aiRerankState = .completed(candidates: candidates.count, retained: aiRankedWorks.count)
+        if completed {
+            let fullText = ordered.filter { cards[$0].confidence == .high }.count
+            aiSecondRerankState = .completed(
+                fullText: fullText,
+                abstractOnly: ordered.count - fullText,
+                retained: ordered.count
+            )
+        }
+    }
+
+    private func applyGlobalRankingFailure(candidates: [Work], message: String) {
+        aiRankedWorks = candidates
+        totalCount = candidates.count
+        aiScores = [:]
+        aiReasons = [:]
+        aiEvidenceLevels = Dictionary(uniqueKeysWithValues: candidates.map {
+            ($0.id, "全局精排未完成")
+        })
+        aiRerankState = .localReady(candidates: candidates.count)
+        aiSecondRerankState = .failed("全局精排未完成：\(message)")
     }
 
     private func planAISearchWithSoftTimeout(
@@ -1391,185 +1873,108 @@ final class SearchStore: ObservableObject {
         plan: AISearchPlan,
         apiKey: String?
     ) async throws -> (works: [Work], aiNotice: String?, pubMedNotice: String?) {
-        let pageCount = Int(ceil(Double(aiCandidateLimit) / Double(aiCandidatePageSize)))
-        let pages = await withTaskGroup(
-            of: (page: Int, works: [Work], error: String?).self,
-            returning: [(page: Int, works: [Work], error: String?)].self
+        let email = UserDefaults.standard
+            .string(forKey: SettingsKeys.contactEmail)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let openAlexQueries = Array(plan.effectiveOpenAlexQueries.prefix(4))
+        let pubMedQueries = Array(plan.effectivePubMedQueries.prefix(4))
+        let registryQueries = Array(plan.effectiveClinicalTrialsQueries.prefix(3))
+        let laneResults = await withTaskGroup(
+            of: (source: DiscoverySource, lane: Int, works: [Work], error: String?).self,
+            returning: [(source: DiscoverySource, lane: Int, works: [Work], error: String?)].self
         ) { group in
-            for page in 1...pageCount {
+            for (lane, query) in openAlexQueries.enumerated() {
                 group.addTask {
-                    await self.fetchCandidatePageWithSoftTimeout(
-                        plan: plan,
-                        apiKey: apiKey,
-                        page: page,
-                        seconds: 8
-                    )
+                    do {
+                        let response = try await self.client.search(
+                            query: query,
+                            sort: .relevance,
+                            fromYear: plan.fromYear,
+                            openAccessOnly: plan.openAccessOnly,
+                            apiKey: apiKey,
+                            page: 1,
+                            perPage: self.aiCandidatePageSize,
+                            timeout: 15,
+                            maxAttempts: 3
+                        )
+                        return (.openAlex, lane, response.results, nil)
+                    } catch {
+                        return (.openAlex, lane, [], error.localizedDescription)
+                    }
                 }
             }
-            var values: [(page: Int, works: [Work], error: String?)] = []
-            for await value in group {
-                values.append(value)
+            for (lane, query) in pubMedQueries.enumerated() {
+                group.addTask {
+                    do {
+                        let works = try await self.pubMedClient.search(
+                            query: query,
+                            fromYear: plan.fromYear,
+                            maxResults: self.aiCandidatePageSize,
+                            contactEmail: (email?.isEmpty == false) ? email : nil,
+                            timeout: 18
+                        )
+                        return (.pubMed, lane, works, nil)
+                    } catch {
+                        return (.pubMed, lane, [], error.localizedDescription)
+                    }
+                }
             }
+            for (lane, query) in registryQueries.enumerated() {
+                group.addTask {
+                    do {
+                        let works = try await self.clinicalTrialsClient.search(
+                            query: query,
+                            pageSize: 50,
+                            timeout: 18
+                        )
+                        let filtered = works.filter { work in
+                            guard let fromYear = plan.fromYear,
+                                  let year = work.publicationYear else { return true }
+                            return year >= fromYear
+                        }
+                        return (.clinicalTrials, lane, filtered, nil)
+                    } catch {
+                        return (.clinicalTrials, lane, [], error.localizedDescription)
+                    }
+                }
+            }
+            var values: [(source: DiscoverySource, lane: Int, works: [Work], error: String?)] = []
+            for await value in group { values.append(value) }
             return values
         }
 
-        var seen = Set<String>()
-        let openAlexWorks = pages
-            .sorted { $0.page < $1.page }
-            .flatMap(\.works)
-            .filter { seen.insert($0.id).inserted }
-
-        let pubMedWorks = await fetchPubMedCandidates(
-            query: plan.pubMedQuery ?? plan.searchQuery,
-            fromYear: plan.fromYear,
-            limit: aiCandidateLimit
-        )
-        let openAlexCapped = Array(openAlexWorks.prefix(aiCandidateLimit))
-        let pubMedOnly = Array(
-            Self.mergeDedup(primary: openAlexCapped, additional: pubMedWorks)
-                .dropFirst(openAlexCapped.count)
-        )
-        // The global abstract rank runs in exactly three 20-paper batches. Reserve up to one
-        // third of the 60-paper pool for PubMed-only discoveries, then backfill with OpenAlex.
-        let pubMedTarget = min(aiCandidateLimit / 3, pubMedOnly.count)
-        let openAlexTarget = max(0, aiCandidateLimit - pubMedTarget)
-        let preferred = Self.mergeDedup(
-            primary: Array(openAlexCapped.prefix(openAlexTarget)),
-            additional: Array(pubMedOnly.prefix(pubMedTarget))
-        )
-        let candidates = Array(
-            Self.mergeDedup(
-                primary: preferred,
-                additional: Array(openAlexCapped.dropFirst(openAlexTarget))
-                    + Array(pubMedOnly.dropFirst(pubMedTarget))
-            )
-            .prefix(aiCandidateLimit)
-        )
-
+        let sourceOrder: [DiscoverySource: Int] = [.pubMed: 0, .openAlex: 1, .clinicalTrials: 2]
+        let orderedLanes = laneResults.sorted {
+            let left = sourceOrder[$0.source] ?? 9
+            let right = sourceOrder[$1.source] ?? 9
+            return left == right ? $0.lane < $1.lane : left < right
+        }
+        let hits = orderedLanes.flatMap { result in
+            result.works.enumerated().map { offset, work in
+                SearchCandidateHit(
+                    work: work,
+                    source: result.source,
+                    lane: result.lane,
+                    rank: offset + 1
+                )
+            }
+        }
+        let candidates = Array(CandidateFusion.fuse(hits).prefix(aiCandidateLimit).map(\.work))
         guard !candidates.isEmpty else {
-            let errors = pages.compactMap(\.error)
+            let errors = laneResults.compactMap(\.error)
             throw AISearchPipelineError.candidateFetch(
-                errors.isEmpty ? "OpenAlex 和 PubMed 都没有返回候选论文" : errors.joined(separator: "；")
+                errors.isEmpty
+                    ? "OpenAlex、PubMed 和 ClinicalTrials.gov 都没有返回候选研究"
+                    : errors.joined(separator: "；")
             )
         }
-
-        let pubMedIDs = Set(pubMedOnly.map(\.id))
-        let addedFromPubMed = candidates.filter { pubMedIDs.contains($0.id) }.count
-        let pubMedNotice = addedFromPubMed > 0
-            ? "PubMed 为本次检索补充了 \(addedFromPubMed) 篇 OpenAlex 未覆盖的论文。"
-            : nil
-        let failedPages = pages.filter { $0.error != nil }.count
-        let aiNotice = failedPages > 0
-            ? "\(failedPages) 个 OpenAlex 候选批次失败，已用成功取得的 \(candidates.count) 篇继续分析。"
-            : nil
-        return (candidates, aiNotice, pubMedNotice)
+        let failed = laneResults.filter { $0.error != nil }.count
+        let notice = failed > 0 ? "部分检索通道暂时不可用，已用成功来源继续。" : nil
+        return (candidates, notice, nil)
     }
 
     /// Best-effort PubMed discovery. Failures return an empty list so OpenAlex results
     /// are never blocked by a PubMed error or timeout.
-    private func fetchPubMedCandidates(
-        query: String,
-        fromYear: Int?,
-        limit: Int
-    ) async -> [Work] {
-        let email = UserDefaults.standard
-            .string(forKey: SettingsKeys.contactEmail)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            return try await pubMedClient.search(
-                query: query,
-                fromYear: fromYear,
-                maxResults: limit,
-                contactEmail: (email?.isEmpty == false) ? email : nil,
-                timeout: 12
-            )
-        } catch {
-            return []
-        }
-    }
-
-    /// Merges an additional result set into a primary one, keeping all primary works and
-    /// appending only additional works that don't already appear (by DOI, PMID, or title).
-    private static func mergeDedup(primary: [Work], additional: [Work]) -> [Work] {
-        var keys = Set<String>()
-        for work in primary {
-            for key in dedupKeys(work) { keys.insert(key) }
-        }
-        var result = primary
-        for work in additional {
-            let workKeys = dedupKeys(work)
-            if workKeys.contains(where: { keys.contains($0) }) { continue }
-            for key in workKeys { keys.insert(key) }
-            result.append(work)
-        }
-        return result
-    }
-
-    private static func dedupKeys(_ work: Work) -> [String] {
-        var keys: [String] = []
-        if let doi = work.normalizedDOI?.lowercased(), !doi.isEmpty {
-            keys.append("doi:" + doi)
-        }
-        if let pmid = work.normalizedPMID, !pmid.isEmpty {
-            keys.append("pmid:" + pmid)
-        }
-        let title = dedupTitleKey(work.title)
-        if !title.isEmpty { keys.append("title:" + title) }
-        return keys
-    }
-
-    private static func dedupTitleKey(_ title: String) -> String {
-        title
-            .lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-    }
-
-    private func fetchCandidatePageWithSoftTimeout(
-        plan: AISearchPlan,
-        apiKey: String?,
-        page: Int,
-        seconds: Int
-    ) async -> (page: Int, works: [Work], error: String?) {
-        await withCheckedContinuation { continuation in
-            let lock = NSLock()
-            nonisolated(unsafe) var didResume = false
-
-            func resumeOnce(_ value: (page: Int, works: [Work], error: String?)) {
-                lock.lock()
-                defer { lock.unlock() }
-                guard !didResume else { return }
-                didResume = true
-                continuation.resume(returning: value)
-            }
-
-            Task.detached(priority: .userInitiated) {
-                do {
-                    let response = try await self.client.search(
-                        query: plan.searchQuery,
-                        sort: plan.sort,
-                        fromYear: plan.fromYear,
-                        openAccessOnly: plan.openAccessOnly,
-                        apiKey: apiKey,
-                        page: page,
-                        perPage: self.aiCandidatePageSize,
-                        timeout: TimeInterval(seconds),
-                        maxAttempts: 1
-                    )
-                    resumeOnce((page, response.results, nil))
-                } catch {
-                    resumeOnce((page, [], error.localizedDescription))
-                }
-            }
-
-            Task.detached(priority: .userInitiated) {
-                try? await Task.sleep(for: .seconds(seconds))
-                resumeOnce((page, [], "OpenAlex 候选请求超时"))
-            }
-        }
-    }
-
     var activeAIProvider: AIProvider {
         let raw = UserDefaults.standard.string(forKey: SettingsKeys.activeAIProvider)
         return raw.flatMap(AIProvider.init(rawValue:)) ?? .deepSeek
@@ -1768,273 +2173,44 @@ final class SearchStore: ObservableObject {
             return
         }
         guard !aiRankedWorks.isEmpty else { return }
-        let hasCachedFineRanking = pageHasCompletedFineRanking(page)
-        aiEnhancementTask?.cancel()
-        // A completed page already has its evidence order and full-text results.
-        // Do not restart page analysis (which re-reads every full text) just to return to it.
-        await showAIPage(page, analyze: !hasCachedFineRanking)
-        restoreFineRankingState(for: page)
-        guard !hasCachedFineRanking else { return }
+        await showAIPage(page, analyze: false)
+    }
+
+    func retryGlobalEvidenceRanking() async {
+        guard !aiCandidateWorks.isEmpty, !lastQuery.isEmpty, let plan = lastAIPlan else { return }
         let generation = searchGeneration
+        let candidates = aiCandidateWorks
         let originalRequest = currentHistoryRecord?.displayQuery ?? query
-        let retrievalQuery = lastQuery
         let configuration = AIProviderConfiguration.load(activeAIProvider)
-        aiEnhancementTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                _ = try await self.rerankPageWithFullTextEvidence(
-                    page: page,
-                    originalRequest: originalRequest,
-                    retrievalQuery: retrievalQuery,
-                    configuration: configuration,
-                    generation: generation
-                )
-            } catch {
-                return
-            }
-        }
-    }
-
-    nonisolated static func replacingPage(
-        in works: [Work],
-        page: Int,
-        pageSize: Int,
-        with replacement: [Work]
-    ) -> [Work] {
-        let start = (page - 1) * pageSize
-        guard page > 0,
-              pageSize > 0,
-              start >= 0,
-              start < works.count else { return works }
-        let end = min(start + pageSize, works.count)
-        guard replacement.count == end - start else { return works }
-        var result = works
-        result.replaceSubrange(start..<end, with: replacement)
-        return result
-    }
-
-    private func pageHasCompletedFineRanking(_ page: Int) -> Bool {
-        Self.pageHasCompletedFineRanking(
-            works: aiRankedWorks,
-            evidenceLevels: aiEvidenceLevels,
-            page: page,
-            pageSize: pageSize
-        )
-    }
-
-    nonisolated static func pageHasCompletedFineRanking(
-        works: [Work],
-        evidenceLevels: [String: String],
-        page: Int,
-        pageSize: Int
-    ) -> Bool {
-        let start = (page - 1) * pageSize
-        guard page > 0, pageSize > 0, start < works.count else { return false }
-        let end = min(start + pageSize, works.count)
-        return works[start..<end].allSatisfy { work in
-            guard let level = evidenceLevels[work.id] else { return false }
-            return level.hasPrefix("AI 全文精排")
-                || level.hasPrefix("AI 摘要精排")
-                || level.hasPrefix("本地全文排序")
-                || level.hasPrefix("本地摘要排序")
-        }
-    }
-
-    private func restoreFineRankingState(for page: Int) {
-        let start = (page - 1) * pageSize
-        guard page > 0, start < aiRankedWorks.count else {
-            aiSecondRerankState = .idle
-            return
-        }
-        let end = min(start + pageSize, aiRankedWorks.count)
-        let levels = aiRankedWorks[start..<end].compactMap { aiEvidenceLevels[$0.id] }
-        guard levels.count == end - start else {
-            aiSecondRerankState = .idle
-            return
-        }
-        let fullText = levels.filter { $0.contains("全文") }.count
-        if levels.allSatisfy({
-            $0.hasPrefix("AI 全文精排") || $0.hasPrefix("AI 摘要精排")
-        }) {
-            aiSecondRerankState = .completed(
-                fullText: fullText,
-                abstractOnly: levels.count - fullText,
-                retained: aiRankedWorks.count
-            )
-        } else if levels.allSatisfy({ $0.hasPrefix("本地") }) {
+        guard configuration.isConfigured else {
             aiSecondRerankState = .failed(
-                "第 \(page) 页 AI 全文精排此前失败。当前使用本地全文证据排序。"
+                AIPlannerError.notConfigured(configuration.provider).localizedDescription
             )
-        } else {
-            aiSecondRerankState = .idle
+            return
         }
-    }
-
-    private func rerankPageWithFullTextEvidence(
-        page: Int,
-        originalRequest: String,
-        retrievalQuery: String,
-        configuration: AIProviderConfiguration,
-        generation: Int
-    ) async throws -> (fullText: String, ai: String, usedAI: Bool) {
-        try ensureSearchIsActive(generation)
-        let start = (page - 1) * pageSize
-        guard page > 0, start < aiRankedWorks.count else {
-            return ("0.0", "0.0", false)
-        }
-        let end = min(start + pageSize, aiRankedWorks.count)
-        let candidates = Array(aiRankedWorks[start..<end])
-        guard !candidates.isEmpty else {
-            aiSecondRerankState = .completed(fullText: 0, abstractOnly: 0, retained: 0)
-            return ("0.0", "0.0", false)
-        }
-
-        let fullTextStartedAt = Date()
-        let apiKey = CredentialStore.string(for: .openAlexAPIKey)
-        let semanticScholarAPIKey = CredentialStore.string(for: .semanticScholarAPIKey)
-        let contactEmail = UserDefaults.standard.string(forKey: SettingsKeys.contactEmail)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let fullTextService = fullTextService
-        var documentsByID: [String: FullTextDocument] = [:]
-        let evidenceQuery = Self.evidenceRetrievalQuery(
-            originalRequest: originalRequest,
-            retrievalQuery: retrievalQuery
-        )
-        for work in candidates {
-            aiVisiblePageFullTextInProgress.insert(work.id)
-            aiVisiblePageFullTextFailures.removeValue(forKey: work.id)
-        }
-        defer {
-            for work in candidates {
-                aiVisiblePageFullTextInProgress.remove(work.id)
-            }
-        }
-        var completed = 0
-        aiSecondRerankState = .refiningFullText(
-            completed: 0,
-            total: candidates.count
-        )
-
-        await withTaskGroup(of: (Work, FullTextDocument?).self) { group in
-            for work in candidates {
-                group.addTask {
-                    let document = await Self.loadFullTextWithSoftTimeout(
-                        service: fullTextService,
-                        work: work,
-                        apiKey: apiKey,
-                        contactEmail: contactEmail,
-                        semanticScholarAPIKey: semanticScholarAPIKey,
-                        seconds: 6
-                    )
-                    return (work, document)
-                }
-            }
-
-            for await (work, document) in group {
-                guard !Task.isCancelled else {
-                    group.cancelAll()
-                    return
-                }
-                if let document,
-                   document.source.isFullText,
-                   Self.fullTextDocument(document, matches: work) {
-                    documentsByID[work.id] = document
-                    aiVisiblePageFullTextFailures.removeValue(forKey: work.id)
-                } else {
-                    aiVisiblePageFullTextFailures[work.id] =
-                        "No accessible full text was found automatically for this paper; AI ranking used its abstract."
-                }
-                completed += 1
-                aiSecondRerankState = .refiningFullText(
-                    completed: completed,
-                    total: candidates.count
-                )
-            }
-        }
-
-        try ensureSearchIsActive(generation)
-        let fullTextSeconds = elapsedSeconds(since: fullTextStartedAt)
-
-        let fullTextPairs = candidates.compactMap { work -> (work: Work, document: FullTextDocument)? in
-            guard let document = documentsByID[work.id] else { return nil }
-            guard document.source.isFullText else { return nil }
-            return (work, document)
-        }
-        for pair in fullTextPairs {
-            aiFullTextDocuments[pair.work.id] = pair.document
-        }
-        let inputs = makeEvidenceInputs(
-            candidates: candidates,
-            documentsByID: documentsByID,
-            retrievalQuery: evidenceQuery
-        )
-        aiSecondRerankState = .rankingEvidence(
-            completed: 0,
-            total: inputs.count
-        )
-        let aiStartedAt = Date()
+        isLoading = true
+        defer { isLoading = false }
         do {
-            let modelResults = try await aiQueryPlanner.rankEvidenceBatch(
-                description: originalRequest,
-                inputs: inputs,
-                configuration: configuration
+            _ = try await rankAllCandidatesWithEvidence(
+                candidates,
+                originalRequest: originalRequest,
+                retrievalQuery: lastQuery,
+                plan: plan,
+                configuration: configuration,
+                generation: generation
             )
-            try ensureSearchIsActive(generation)
-            let byIndex = Dictionary(uniqueKeysWithValues: modelResults.map { ($0.index, $0) })
-            guard byIndex.count == inputs.count else { throw AIPlannerError.invalidRanking }
-            let ranked: [EvidenceRankResult] = try inputs.enumerated().map { index, input in
-                guard let result = byIndex[index] else { throw AIPlannerError.invalidRanking }
-                let reason = result.reason.trimmingCharacters(in: .whitespacesAndNewlines)
-                return (
-                    work: input.work,
-                    score: min(100, max(0, result.score)),
-                    relevant: result.relevant,
-                    reason: reason.isEmpty ? evidenceReason(for: input) : reason,
-                    hasFullText: input.hasFullTextEvidence,
-                    order: index
-                )
-            }
-            let counts = applyPageEvidenceRanking(ranked, page: page, usedAI: true)
-            aiRerankState = .completed(candidates: aiRankedWorks.count, retained: aiRankedWorks.count)
-            aiSecondRerankState = .completed(
-                fullText: counts.fullText,
-                abstractOnly: counts.abstractOnly,
-                retained: aiRankedWorks.count
-            )
-            if currentPage == page {
-                await showAIPage(page, analyze: false)
-                analyzeVisiblePageInBackground()
-            }
-            startFullTextReviewSummaryGeneration(
-                for: fullTextPairs,
-                configuration: configuration
-            )
-            scheduleCompletedStageSave()
-            return (fullTextSeconds, elapsedSeconds(since: aiStartedAt), true)
         } catch is CancellationError {
-            throw CancellationError()
+            return
         } catch {
-            try ensureSearchIsActive(generation)
-            let fallback = fallbackEvidenceRanking(inputs)
-            _ = applyPageEvidenceRanking(fallback, page: page, usedAI: false)
-            aiRerankState = .completed(candidates: aiRankedWorks.count, retained: aiRankedWorks.count)
-            aiSecondRerankState = .failed(
-                "第 \(page) 页 AI 全文精排失败：\(error.localizedDescription)。当前使用本地全文证据排序。"
-            )
-            if currentPage == page {
-                await showAIPage(page, analyze: false)
-                analyzeVisiblePageInBackground()
-            }
-            startFullTextReviewSummaryGeneration(
-                for: fullTextPairs,
-                configuration: configuration
-            )
-            scheduleCompletedStageSave()
-            return (fullTextSeconds, elapsedSeconds(since: aiStartedAt), false)
+            guard generation == searchGeneration else { return }
+            applyGlobalRankingFailure(candidates: candidates, message: error.localizedDescription)
         }
+        guard generation == searchGeneration else { return }
+        await showAIPage(1, analyze: false)
+        scheduleCompletedStageSave()
     }
 
-    private nonisolated static func loadFullTextWithSoftTimeout(
+    nonisolated static func loadFullTextWithSoftTimeout(
         service: FullTextService,
         work: Work,
         apiKey: String?,
@@ -2042,285 +2218,77 @@ final class SearchStore: ObservableObject {
         semanticScholarAPIKey: String?,
         seconds: Int
     ) async -> FullTextDocument? {
-        await withCheckedContinuation { continuation in
-            let lock = NSLock()
-            nonisolated(unsafe) var didResume = false
-
-            func resumeOnce(_ document: FullTextDocument?) {
-                lock.lock()
-                defer { lock.unlock() }
-                guard !didResume else { return }
-                didResume = true
-                continuation.resume(returning: document)
-            }
-
-            Task.detached(priority: .utility) {
-                let document = try? await service.load(
+        await withTaskGroup(of: FullTextDocument?.self) { group in
+            group.addTask(priority: .utility) {
+                try? await service.load(
                     work: work,
                     apiKey: apiKey,
                     contactEmail: contactEmail,
                     semanticScholarAPIKey: semanticScholarAPIKey
                 )
-                if let document,
-                   fullTextDocument(document, matches: work) {
-                    resumeOnce(document)
-                } else {
-                    if document?.source.isFullText == true {
-                        await service.clearCache(workID: work.id)
-                    }
-                    resumeOnce(nil)
+            }
+            group.addTask(priority: .utility) {
+                do {
+                    try await Task.sleep(for: .seconds(seconds))
+                    return nil
+                } catch {
+                    return nil
                 }
             }
-
-            Task.detached(priority: .utility) {
-                try? await Task.sleep(for: .seconds(seconds))
-                resumeOnce(nil)
+            let document = await group.next() ?? nil
+            group.cancelAll()
+            guard let document else { return nil }
+            guard fullTextDocument(document, matches: work) else {
+                if document.source.isFullText {
+                    await service.clearCache(work: work)
+                }
+                return nil
             }
+            return document
         }
     }
 
-    private func makeEvidenceInputs(
+    private nonisolated static func makeEvidenceInputs(
         candidates: [Work],
         documentsByID: [String: FullTextDocument],
-        retrievalQuery: String
-    ) -> [AIEvidenceRankingInput] {
-        candidates.map { work in
+        preparedQuery: HybridRetrievalQuery,
+        maximumNewEmbeddingsPerDocument: Int
+    ) async -> (inputs: [AIEvidenceRankingInput], generatedEmbeddingCount: Int) {
+        var inputs: [AIEvidenceRankingInput] = []
+        var generatedEmbeddingCount = 0
+        for work in candidates {
             let document = documentsByID[work.id]
             let passages: [PassageHit]
             if let document, document.source.isFullText {
-                passages = HybridRetriever.search(
-                    query: retrievalQuery,
+                let result = await HybridRetriever.searchCached(
+                    preparedQuery: preparedQuery,
+                    workID: work.id,
                     paragraphs: document.paragraphs,
-                    limit: 3
+                    limit: HybridRetriever.evidencePassageLimit,
+                    maximumNewEmbeddings: maximumNewEmbeddingsPerDocument
                 )
+                passages = result.hits
+                generatedEmbeddingCount += result.generatedEmbeddingCount
             } else {
                 passages = []
             }
-            return AIEvidenceRankingInput(
+            inputs.append(AIEvidenceRankingInput(
                 work: work,
                 abstract: work.abstractText,
                 passages: passages,
                 source: document?.source
-            )
+            ))
         }
+        return (inputs, generatedEmbeddingCount)
     }
 
-    private func fallbackEvidenceRanking(
-        _ inputs: [AIEvidenceRankingInput]
-    ) -> [EvidenceRankResult] {
-        inputs.enumerated().map { index, input in
-            let baseScore = aiScores[input.work.id] ?? max(55, 80 - index)
-            let evidenceBonus = input.hasFullTextEvidence ? 8 : (input.abstract == nil ? -8 : 0)
-            let score = min(100, max(55, baseScore + evidenceBonus))
-            return (
-                work: input.work,
-                score: score,
-                relevant: true,
-                reason: evidenceReason(for: input),
-                hasFullText: input.hasFullTextEvidence,
-                order: index
-            )
-        }
-    }
-
-    private func localPreviewReason(for work: Work) -> String {
-        "摘要简述：\(abstractOnlyPaperSummary(for: work))"
-    }
-
-    private func evidenceReason(for input: AIEvidenceRankingInput) -> String {
-        if let existing = aiReasons[input.work.id],
-           !isGenericRankingReason(existing) {
-            return existing
-        }
-        if let passage = input.passages.first {
-            let summary = contentSummary(
-                for: input.work,
-                evidenceText: passage.paragraph.text
-            )
-            return "全文简述：\(summary)"
-        }
-        return "摘要简述：\(abstractOnlyPaperSummary(for: input.work))"
-    }
-
-    private func normalizedContentSummaryReason(
-        _ reason: String,
-        fallback: String
-    ) -> String {
-        let clean = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty, !isGenericRankingReason(clean) else {
-            return fallback
-        }
-        if clean.hasPrefix("论文简述：")
-            || clean.hasPrefix("摘要简述：")
-            || clean.hasPrefix("全文简述：") {
-            return clean
-        }
-        return "论文简述：\(clean)"
-    }
-
-    private func isGenericRankingReason(_ reason: String) -> Bool {
-        reason.hasPrefix("本地快速排序")
-            || reason.hasPrefix("本地证据排序")
-            || reason.hasPrefix("临时候选：标题")
-            || reason.hasPrefix("摘要预览")
-            || reason.hasPrefix("全文要点")
-            || reason.hasPrefix("摘要要点")
-            || reason.contains("与当前检索主题相关")
-            || reason.contains("可用于初步判断研究范围")
-            || reason.contains("可作为当前检索主题的候选证据")
-            || reason.contains("可用于判断与当前问题的相关性")
-    }
-
-    private func contentSummary(for work: Work, evidenceText: String?) -> String {
-        let cleanEvidence = evidenceText?
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if let cleanEvidence, !cleanEvidence.isEmpty {
-            return "\(paperSummaryPrefix(for: work.title))：\(shortEvidenceSentence(cleanEvidence))"
-        }
-
-        if work.abstractText == nil {
-            return "当前只有标题和元数据，暂时无法总结具体结论，需进一步读取摘要或全文。"
-        }
-        return "本文围绕题名所示研究问题展开，当前摘要信息不足，需打开原文核对具体结论。"
-    }
-
-    private func abstractOnlyPaperSummary(for work: Work) -> String {
-        let title = work.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let abstract = work.abstractText,
-              !abstract.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return "本文围绕“\(String(title.prefix(80)))”展开；当前缺少摘要，需读取原文核对具体内容。"
-        }
-
-        let lowerTitle = title.lowercased()
-        let summarySubject = shortTitleSubject(title)
-        let focus = abstractFocusTerms(from: "\(title) \(abstract)")
-        let focusText = focus.isEmpty ? "" : "，重点涉及\(focus.joined(separator: "、"))"
-
-        if lowerTitle.contains("systematic review")
-            || lowerTitle.contains("meta-analysis")
-            || lowerTitle.contains("scoping review")
-            || lowerTitle.contains("review") {
-            return "本文综述\(summarySubject)\(focusText)，用于梳理该领域的研究证据和主要问题。"
-        }
-        if lowerTitle.contains("trial")
-            || lowerTitle.contains("cohort")
-            || lowerTitle.contains("case-control")
-            || lowerTitle.contains("cross-sectional")
-            || abstract.lowercased().contains("participants")
-            || abstract.lowercased().contains("patients") {
-            return "本文基于临床或观察性数据研究\(summarySubject)\(focusText)，用于评估相关因素、结局或关联。"
-        }
-        if lowerTitle.contains("development")
-            || lowerTitle.contains("validation")
-            || lowerTitle.contains("questionnaire")
-            || abstract.lowercased().contains("validated") {
-            return "本文开发或验证与\(summarySubject)相关的测量工具或方法\(focusText)。"
-        }
-        return "本文研究\(summarySubject)\(focusText)，摘要可用于初步了解研究问题，具体方法和结果仍需核对全文。"
-    }
-
-    private func shortTitleSubject(_ title: String) -> String {
-        let clean = title
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return "该主题" }
-        return "“\(String(clean.prefix(90)))”"
-    }
-
-    private func abstractFocusTerms(from text: String) -> [String] {
-        let mappings: [(String, String)] = [
-            ("national drug code", "National Drug Codes"),
-            ("ndc", "NDC"),
-            ("gastrointestinal", "胃肠道症状"),
-            ("adverse drug", "药物不良事件"),
-            ("claims", "医保/索赔数据库"),
-            ("observational", "观察性数据库"),
-            ("opioid", "阿片类药物"),
-            ("autism", "自闭症"),
-            ("camouflaging", "社交伪装"),
-            ("masking", "掩饰行为"),
-            ("diagnosis", "诊断"),
-            ("polypharmacy", "多重用药"),
-            ("drug code", "药品编码"),
-            ("terminolog", "标准化术语")
-        ]
-        let lower = text.lowercased()
-        var values: [String] = []
-        for (needle, label) in mappings where lower.contains(needle) && !values.contains(label) {
-            values.append(label)
-            if values.count == 3 { break }
-        }
-        return values
-    }
-
-    private func shortEvidenceSentence(_ text: String) -> String {
-        let separators = CharacterSet(charactersIn: ".!?。！？\n")
-        let firstSentence = text
-            .components(separatedBy: separators)
-            .first?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let value = firstSentence?.isEmpty == false ? firstSentence! : text
-        return String(value.prefix(120))
-    }
-
-    private func paperSummaryPrefix(for title: String) -> String {
-        let lower = title.lowercased()
-        if lower.contains("review")
-            || lower.contains("meta-analysis")
-            || lower.contains("systematic") {
-            return "本文综述"
-        }
-        if lower.contains("trial")
-            || lower.contains("cohort")
-            || lower.contains("patients")
-            || lower.contains("case-control") {
-            return "本文基于临床或样本研究"
-        }
-        return "本文研究"
-    }
-
-    private func applyPageEvidenceRanking(
-        _ ranked: [EvidenceRankResult],
-        page: Int,
-        usedAI: Bool
-    ) -> (fullText: Int, abstractOnly: Int) {
-        let ordered = ranked.sorted {
-            if $0.relevant != $1.relevant { return $0.relevant && !$1.relevant }
-            if $0.score == $1.score { return $0.order < $1.order }
-            return $0.score > $1.score
-        }
-        aiRankedWorks = Self.replacingPage(
-            in: aiRankedWorks,
-            page: page,
-            pageSize: pageSize,
-            with: ordered.map(\.work)
+    nonisolated static func newEmbeddingAllowance(fullTextDocumentCount: Int) -> Int {
+        guard fullTextDocumentCount > 0 else { return 0 }
+        let fairShare = maximumNewEmbeddingsPerSearch / fullTextDocumentCount
+        return min(
+            HybridRetriever.maximumNewEmbeddingsPerDocument,
+            max(1, fairShare)
         )
-
-        var reasons = aiReasons
-        var scores = aiScores
-        var levels = aiEvidenceLevels
-        for result in ordered {
-            let cleanReason = result.reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !cleanReason.isEmpty {
-                reasons[result.work.id] = cleanReason
-            } else if reasons[result.work.id] == nil {
-                reasons[result.work.id] = localPreviewReason(for: result.work)
-            }
-            scores[result.work.id] = result.score
-            if usedAI {
-                levels[result.work.id] = result.hasFullText ? "AI 全文精排" : "AI 摘要精排"
-            } else {
-                levels[result.work.id] = result.hasFullText ? "本地全文排序" : "本地摘要排序"
-            }
-        }
-        aiReasons = reasons
-        aiScores = scores
-        aiEvidenceLevels = levels
-
-        let fullTextCount = ordered.filter(\.hasFullText).count
-        return (fullTextCount, ordered.count - fullTextCount)
     }
 
     private func showAIPage(
@@ -2349,14 +2317,6 @@ final class SearchStore: ObservableObject {
             scheduleCompletedStageSave()
         }
         if analyze {
-            await analyzeCurrentPage()
-        }
-    }
-
-    private func analyzeVisiblePageInBackground() {
-        let context = captureHistoryMutationContext()
-        Task {
-            guard isCurrentHistoryMutationContext(context) else { return }
             await analyzeCurrentPage()
         }
     }
@@ -2459,7 +2419,7 @@ final class SearchStore: ObservableObject {
         let context = captureHistoryMutationContext()
         fullTextState = .loading
         if forceRefresh {
-            await fullTextService.clearCache(workID: work.id)
+            await fullTextService.clearCache(work: work)
             guard isCurrentHistoryMutationContext(context) else { return }
         }
         do {
@@ -2476,7 +2436,7 @@ final class SearchStore: ObservableObject {
             guard isCurrentHistoryMutationContext(context) else { return }
             guard Self.fullTextDocument(document, matches: work) else {
                 if document.source.isFullText {
-                    await fullTextService.clearCache(workID: work.id)
+                    await fullTextService.clearCache(work: work)
                 }
                 throw NSError(
                     domain: "RagBio.FullText",

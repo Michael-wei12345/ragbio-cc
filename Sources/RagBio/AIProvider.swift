@@ -121,6 +121,10 @@ struct AISearchPlan: Codable, Equatable {
     let sort: SearchSort
     let explanation: String
     let pubMedQuery: String?
+    let questionProfile: ResearchQuestionProfile?
+    let openAlexQueries: [String]
+    let pubMedQueries: [String]
+    let clinicalTrialsQueries: [String]
 
     init(
         searchQuery: String,
@@ -128,7 +132,11 @@ struct AISearchPlan: Codable, Equatable {
         openAccessOnly: Bool,
         sort: SearchSort,
         explanation: String,
-        pubMedQuery: String? = nil
+        pubMedQuery: String? = nil,
+        questionProfile: ResearchQuestionProfile? = nil,
+        openAlexQueries: [String] = [],
+        pubMedQueries: [String] = [],
+        clinicalTrialsQueries: [String] = []
     ) {
         self.searchQuery = searchQuery
         self.fromYear = fromYear
@@ -136,6 +144,10 @@ struct AISearchPlan: Codable, Equatable {
         self.sort = sort
         self.explanation = explanation
         self.pubMedQuery = pubMedQuery
+        self.questionProfile = questionProfile
+        self.openAlexQueries = openAlexQueries
+        self.pubMedQueries = pubMedQueries
+        self.clinicalTrialsQueries = clinicalTrialsQueries
     }
 
     enum CodingKeys: String, CodingKey {
@@ -145,50 +157,65 @@ struct AISearchPlan: Codable, Equatable {
         case sort
         case explanation
         case pubMedQuery = "pubmed_query"
+        case questionProfile = "question_profile"
+        case openAlexQueries = "openalex_queries"
+        case pubMedQueries = "pubmed_queries"
+        case clinicalTrialsQueries = "clinical_trials_queries"
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        searchQuery = try values.decode(String.self, forKey: .searchQuery)
+        let decodedOpenAlexQueries = try values.decodeIfPresent(
+            [String].self,
+            forKey: .openAlexQueries
+        ) ?? []
+        let legacyQuery = try values.decodeIfPresent(String.self, forKey: .searchQuery)
+        guard let effectiveQuery = legacyQuery ?? decodedOpenAlexQueries.first else {
+            throw DecodingError.keyNotFound(
+                CodingKeys.searchQuery,
+                .init(codingPath: decoder.codingPath, debugDescription: "No search query")
+            )
+        }
+        searchQuery = effectiveQuery
         fromYear = try values.decodeFlexibleIntIfPresent(forKey: .fromYear)
         openAccessOnly = try values.decodeFlexibleBoolIfPresent(forKey: .openAccessOnly) ?? false
         let rawSort = try values.decodeIfPresent(String.self, forKey: .sort) ?? "relevance"
         sort = SearchSort(rawValue: rawSort) ?? .relevance
         explanation = try values.decodeIfPresent(String.self, forKey: .explanation) ?? ""
         pubMedQuery = try values.decodeIfPresent(String.self, forKey: .pubMedQuery)
+        questionProfile = try values.decodeIfPresent(
+            ResearchQuestionProfile.self,
+            forKey: .questionProfile
+        )
+        openAlexQueries = decodedOpenAlexQueries
+        pubMedQueries = try values.decodeIfPresent([String].self, forKey: .pubMedQueries) ?? []
+        clinicalTrialsQueries = try values.decodeIfPresent(
+            [String].self,
+            forKey: .clinicalTrialsQueries
+        ) ?? []
     }
-}
 
-struct AIRankedCandidate: Decodable, Equatable {
-    let index: Int
-    let score: Int
-    let relevant: Bool
-    let reason: String
-
-    enum CodingKeys: String, CodingKey {
-        case index, score, relevant, reason
+    var effectiveOpenAlexQueries: [String] {
+        Self.nonEmpty(openAlexQueries, fallback: searchQuery)
     }
 
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        guard let index = try values.decodeFlexibleIntIfPresent(forKey: .index),
-              let score = try values.decodeFlexibleIntIfPresent(forKey: .score) else {
-            throw DecodingError.dataCorrupted(
-                .init(
-                    codingPath: decoder.codingPath,
-                    debugDescription: "Ranking index and score must be numbers"
-                )
-            )
+    var effectivePubMedQueries: [String] {
+        Self.nonEmpty(pubMedQueries, fallback: pubMedQuery ?? searchQuery)
+    }
+
+    var effectiveClinicalTrialsQueries: [String] {
+        Self.nonEmpty(clinicalTrialsQueries, fallback: searchQuery)
+    }
+
+    private static func nonEmpty(_ values: [String], fallback: String) -> [String] {
+        var seen = Set<String>()
+        let clean = values.compactMap { value -> String? in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return seen.insert(trimmed.lowercased()).inserted ? trimmed : nil
         }
-        self.index = index
-        self.score = score
-        relevant = try values.decodeFlexibleBoolIfPresent(forKey: .relevant) ?? false
-        reason = try values.decodeIfPresent(String.self, forKey: .reason) ?? ""
+        return clean.isEmpty ? [fallback] : clean
     }
-}
-
-struct AIRankingResponse: Decodable {
-    let rankings: [AIRankedCandidate]
 }
 
 struct AITranslationInput {
@@ -266,11 +293,6 @@ struct AIEvidenceRankingInput {
     }
 }
 
-struct AIAbstractRankingInput {
-    let work: Work
-    let abstract: String?
-}
-
 enum AIRerankState: Equatable {
     case idle
     case fetchingCandidates
@@ -284,6 +306,7 @@ enum AISecondRerankState: Equatable {
     case idle
     case fetchingEvidence(completed: Int, total: Int)
     case rankingEvidence(completed: Int, total: Int)
+    case calibrating(total: Int)
     case refiningFullText(completed: Int, total: Int)
     case completed(fullText: Int, abstractOnly: Int, retained: Int)
     case failed(String)

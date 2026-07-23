@@ -20,6 +20,35 @@ import Testing
         #expect(work.publicationTypes == ["Journal Article", "Clinical Trial Protocol"])
         #expect(work.nonPrimaryPublicationKind == .studyProtocol)
     }
+
+    @Test func vernacularTitleReplacesUnavailableArticleTitle() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PubMedVernacularTitleURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let works = try await PubMedClient(session: session).search(
+            query: "HER2-low",
+            fromYear: nil,
+            maxResults: 1,
+            contactEmail: nil
+        )
+        let work = try #require(works.first)
+
+        #expect(
+            work.title
+                == "« HER2-faible », un nouveau concept: HER2-low breast cancer treatment strategy."
+        )
+    }
+
+    @Test func missingPubMedTitlesUseEnglishFallback() {
+        #expect(
+            BibliographicTitleResolver.preferred(
+                articleTitle: "[Not Available].",
+                vernacularTitle: ""
+            ) == "Title unavailable"
+        )
+    }
 }
 
 private final class PubMedPublicationTypeURLProtocol: URLProtocol, @unchecked Sendable {
@@ -45,6 +74,47 @@ private final class PubMedPublicationTypeURLProtocol: URLProtocol, @unchecked Se
                           <PublicationType>Journal Article</PublicationType>
                           <PublicationType>Clinical Trial Protocol</PublicationType>
                         </PublicationTypeList>
+                      </Article>
+                    </MedlineCitation>
+                  </PubmedArticle>
+                </PubmedArticleSet>
+                """.utf8
+            )
+        }
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/xml"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private final class PubMedVernacularTitleURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        let data: Data
+        if url.path.hasSuffix("esearch.fcgi") {
+            data = Data(#"{"esearchresult":{"idlist":["34969511"]}}"#.utf8)
+        } else {
+            data = Data(
+                """
+                <PubmedArticleSet>
+                  <PubmedArticle>
+                    <MedlineCitation>
+                      <PMID>34969511</PMID>
+                      <Article>
+                        <ArticleTitle>[Not Available].</ArticleTitle>
+                        <VernacularTitle>« HER2-faible », un nouveau concept: HER2-low breast cancer treatment strategy.</VernacularTitle>
+                        <Journal><Title>Bulletin du cancer</Title></Journal>
                       </Article>
                     </MedlineCitation>
                   </PubmedArticle>

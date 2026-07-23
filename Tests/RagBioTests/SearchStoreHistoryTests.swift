@@ -90,6 +90,51 @@ import Testing
         withExtendedLifetime(hostingView) {}
     }
 
+    @Test func globalRankingPaginationOnlySlicesCachedResults() async throws {
+        let root = try makeTemporaryDirectory()
+        let historyStore = SearchHistoryStore(
+            root: root.appendingPathComponent("SearchHistory"),
+            legacyRoot: root.appendingPathComponent("SearchSession")
+        )
+        let works = (1...25).map {
+            makeWork(id: "https://openalex.org/W\($0)", doi: "10.1000/page-\($0)")
+        }
+        var record = makeRecord(query: "global page", works: Array(works.prefix(20)), date: Date())
+        record.snapshot.rankedWorks = works
+        record.snapshot.candidateWorks = works
+        record.snapshot.totalCount = works.count
+        record.snapshot.completedAIStage = .globalEvidenceRanking
+        record.snapshot.aiScores = Dictionary(
+            uniqueKeysWithValues: works.enumerated().map { ($0.element.id, 100 - $0.offset) }
+        )
+        record.snapshot.aiEvidenceLevels = Dictionary(
+            uniqueKeysWithValues: works.map { ($0.id, "摘要证据") }
+        )
+        try await historyStore.bootstrap()
+        _ = try await historyStore.save(record)
+
+        RecordingURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [RecordingURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let store = SearchStore(
+            client: OpenAlexClient(session: session),
+            fullTextService: FullTextService(session: session),
+            aiQueryPlanner: AIQueryPlanner(session: session),
+            historyStore: historyStore,
+            restoreOnInit: false
+        )
+        await store.openHistory(record.id)
+
+        await store.goToPage(2)
+
+        #expect(store.currentPage == 2)
+        #expect(store.works.map(\.id) == Array(works.suffix(5)).map(\.id))
+        #expect(RecordingURLProtocol.requestCount == 0)
+        #expect(store.aiSecondRerankState == .completed(fullText: 0, abstractOnly: 25, retained: 25))
+    }
+
     @Test func mountingRestoredSelectionDoesNotStartNetworkOrSummaryWork() async throws {
         let root = try makeTemporaryDirectory()
         let historyRoot = root.appendingPathComponent("SearchHistory")

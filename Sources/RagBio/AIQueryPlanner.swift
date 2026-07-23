@@ -16,8 +16,8 @@ struct AIQueryPlanner {
 
         let acronymHint = acronymHints(for: description)
         let prompt = """
-        You convert a user's research request into a search plan for the OpenAlex academic \
-        works database. Do not invent papers, authors, DOIs, or results. Return only one JSON \
+        You convert a user's research request into a reproducible biomedical evidence-search \
+        plan. Do not invent papers, authors, DOIs, or results. Return only one JSON \
         object with these keys:
         - search_query: concise English scholarly keywords suitable for full-text search
         - pubmed_query: a PubMed query string. Group synonyms with OR inside parentheses and \
@@ -28,9 +28,18 @@ struct AIQueryPlanner {
         - open_access_only: boolean
         - sort: one of relevance, newest, cited
         - explanation: one short Chinese sentence explaining the interpretation
+        - question_profile: an object with question_type (intervention, diagnosis, prognosis, \
+        etiology, prevalence, qualitative, or other), and arrays population, \
+        intervention_or_exposure, comparator, outcomes, context, preferred_study_designs
+        - openalex_queries: 2-4 short English query strings: a broad high-recall lane, a \
+        primary-study lane, and when supported a subgroup or outcome lane
+        - pubmed_queries: 2-4 valid PubMed Boolean queries using MeSH plus [tiab] synonyms. \
+        Include broad and primary-study lanes; do not require comparator/outcome in every lane
+        - clinical_trials_queries: 1-3 concise condition/intervention queries for \
+        ClinicalTrials.gov, without PubMed field syntax
 
         Preserve named genes, proteins, diseases, organisms, methods, and populations. The \
-        search_query must be plain space-separated scholarly keywords for OpenAlex search; do \
+        search_query and openalex_queries must be concise plain scholarly keywords; do \
         not use Boolean syntax such as AND, OR, NOT, parentheses, or field operators. Expand \
         common abbreviations only when useful. Do not reinterpret uppercase acronyms unless the \
         surrounding context clearly supports that expansion. For ambiguous acronyms, preserve the \
@@ -51,22 +60,22 @@ struct AIQueryPlanner {
             data = try await openAICompatible(
                 prompt: prompt,
                 configuration: configuration,
-                maxTokens: 420,
-                timeout: 10
+                maxTokens: 1_200,
+                timeout: 20
             )
         case .anthropic:
             data = try await anthropic(
                 prompt: prompt,
                 configuration: configuration,
-                maxTokens: 420,
-                timeout: 10
+                maxTokens: 1_200,
+                timeout: 20
             )
         case .gemini:
             data = try await gemini(
                 prompt: prompt,
                 configuration: configuration,
-                maxTokens: 420,
-                timeout: 10
+                maxTokens: 1_200,
+                timeout: 20
             )
         }
         return try decodePlan(from: data)
@@ -102,112 +111,190 @@ struct AIQueryPlanner {
         }
     }
 
-    func rankEvidenceBatch(
+    func analyzeEvidenceBatch(
         description: String,
+        profile: ResearchQuestionProfile?,
         inputs: [AIEvidenceRankingInput],
         configuration: AIProviderConfiguration
-    ) async throws -> [AIRankedCandidate] {
+    ) async throws -> [AIEvidenceCardOutput] {
         guard configuration.isConfigured else {
             throw AIPlannerError.notConfigured(configuration.provider)
         }
         guard !inputs.isEmpty else { return [] }
 
         let candidateText = inputs.enumerated().map { index, input in
-            let abstract = String((input.abstract ?? "No abstract available").prefix(600))
-            let passages = input.passages.prefix(2).map { hit in
-                "\(hit.paragraph.locator): \(String(hit.paragraph.text.prefix(700)))"
+            let abstract = Self.abstractEvidence(input.abstract, maxCharacters: 2_800)
+            let passages = input.passages.prefix(HybridRetriever.evidencePassageLimit).map { hit in
+                "\(hit.paragraph.locator): \(Self.passageEvidence(hit, maxCharacters: 1_000))"
             }.joined(separator: "\n")
             return """
             [\(index)]
             Title: \(input.work.title)
-            Year: \(input.work.publicationYear.map(String.init) ?? "unknown")
-            Venue: \(input.work.venue)
+            Publication types: \((input.work.publicationTypes ?? []).joined(separator: ", "))
             Abstract: \(abstract)
-            Full-text evidence: \(passages.isEmpty ? "Not available" : passages)
+            Evidence excerpts: \(passages.isEmpty ? "Not available" : passages)
             """
         }.joined(separator: "\n\n")
-
+        let profileData = try JSONEncoder().encode(profile ?? .empty)
+        let profileJSON = String(data: profileData, encoding: .utf8) ?? "{}"
         let prompt = """
-        Rank these papers for the user's ORIGINAL research request using only the supplied abstract \
-        and full-text evidence. Judge whether each paper actually answers the request, not keyword \
-        overlap. Return exactly one item for every supplied index as JSON:
-        {"rankings":[{"index":0,"score":0,"relevant":false,"reason":"中文证据总结"}]}
+        Build one structured evidence card for every candidate using ONLY the supplied evidence. \
+        This prioritizes screening for a systematic review; it is not a final inclusion decision. \
+        Unknown or unreported information must be "unclear", never guessed as mismatch. A paper \
+        can be useful as a follow-up, subgroup, safety, registry, or background report even when \
+        it is not the primary report. Match the person in whom the outcome is measured: if the \
+        question asks about depression in children, depression measured only in parents or \
+        caregivers is an outcome mismatch even when the child has the target disease. Respect \
+        explicit publication types: reviews and meta-analyses are background, trial registrations \
+        are registry records, and protocols are protocol records, never primary outcome reports.
 
-        score must be an integer from 0 to 100. relevant is true only when the supplied evidence is \
-        genuinely useful. reason must be one short Simplified Chinese sentence based only on the \
-        supplied evidence. Do not invent facts or use outside knowledge.
+        For population, intervention_or_exposure, comparator, outcome, and context use exactly one \
+        of: match, partial, mismatch, unclear. role must be one of: primary, follow_up, subgroup, \
+        safety, registry, background, protocol, unclear. Boolean fields may be true only when the \
+        supplied text supports them.
+
+        Return only JSON and exactly one card per index:
+        {"cards":[{"index":0,"population":"unclear","intervention_or_exposure":"unclear",\
+        "comparator":"unclear","outcome":"unclear","context":"unclear","role":"unclear",\
+        "reports_effect_estimate":false,"reports_sample_size":false,\
+        "has_comparator_group":false,"reports_follow_up":false,"unique_contribution":false}]}
 
         Original request: \(description)
+        Question profile: \(profileJSON)
 
         Candidates:
         \(candidateText)
         """
-
         let data = try await generateJSON(
             prompt: prompt,
             configuration: configuration,
-            maxTokens: max(1_200, inputs.count * 80),
-            timeout: 25
+            maxTokens: max(1_800, inputs.count * 150),
+            timeout: 40
         )
-        let decoded = try decodeJSON(AIRankingResponse.self, from: data)
-        let valid = decoded.rankings.filter { inputs.indices.contains($0.index) }
-        guard valid.count == inputs.count,
-              Set(valid.map(\.index)).count == inputs.count else {
+        let decoded = try decodeJSON(AIEvidenceCardResponse.self, from: data)
+        let valid = decoded.cards.filter { inputs.indices.contains($0.index) }
+        guard !valid.isEmpty,
+              Set(valid.map(\.index)).count == valid.count else {
             throw AIPlannerError.invalidRanking
         }
         return valid
     }
 
-    func rankAbstractBatch(
+    func calibrateGlobalScores(
         description: String,
-        inputs: [AIAbstractRankingInput],
+        profile: ResearchQuestionProfile?,
+        cards: [StructuredEvidenceCard],
+        works: [Work],
+        localScores: [Int],
         configuration: AIProviderConfiguration
-    ) async throws -> [AIRankedCandidate] {
+    ) async throws -> [AIGlobalScoreOutput] {
         guard configuration.isConfigured else {
             throw AIPlannerError.notConfigured(configuration.provider)
         }
-        guard !inputs.isEmpty else { return [] }
+        guard cards.count == works.count, cards.count == localScores.count else {
+            throw AIPlannerError.invalidRanking
+        }
+        guard !cards.isEmpty else { return [] }
 
-        let candidateText = inputs.enumerated().map { index, input in
-            let abstract = String((input.abstract ?? "No abstract available").prefix(700))
+        let rows = cards.indices.map { index in
+            let card = cards[index]
             return """
-            [\(index)]
-            Title: \(input.work.title)
-            Year: \(input.work.publicationYear.map(String.init) ?? "unknown")
-            Venue: \(input.work.venue)
-            Abstract: \(abstract)
+            [\(index)] title=\(works[index].title.prefix(220)) | P=\(card.population.rawValue) \
+            I/E=\(card.interventionOrExposure.rawValue) C=\(card.comparator.rawValue) \
+            O=\(card.outcome.rawValue) context=\(card.context.rawValue) role=\(card.role.rawValue) \
+            effect=\(card.reportsEffectEstimate) sample=\(card.reportsSampleSize) \
+            control=\(card.hasComparatorGroup) followup=\(card.reportsFollowUp) \
+            unique=\(card.uniqueContribution) confidence=\(card.confidence.rawValue) \
+            local=\(localScores[index]) family=\(card.studyFamilyID ?? "none")
             """
-        }.joined(separator: "\n\n")
-
+        }.joined(separator: "\n")
+        let profileData = try JSONEncoder().encode(profile ?? .empty)
+        let profileJSON = String(data: profileData, encoding: .utf8) ?? "{}"
         let prompt = """
-        Rank these papers for the user's ORIGINAL research request using only the supplied title, \
-        venue, year, and abstract. Judge whether each paper actually answers the request, not \
-        keyword overlap. Return exactly one item for every supplied index as JSON:
-        {"rankings":[{"index":0,"score":0,"relevant":false,"reason":"中文摘要依据"}]}
+        Calibrate globally comparable relevance scores for every candidate for the original \
+        systematic-review question. Use one 0-100 rubric across the entire list. Unknown is not \
+        mismatch. Missing full text lowers confidence but must not lower relevance by itself. \
+        Follow-up, subgroup, safety, and registry reports can be useful. Citation count, venue \
+        prestige, and recency are not relevance factors. The outcome must be measured in the target \
+        population; an outcome reported only for parents or caregivers does not match a child \
+        outcome. A clear core population, intervention/exposure, or outcome-subject mismatch must \
+        score 0-4. Do not decide final meta-analysis eligibility.
 
-        score must be an integer from 0 to 100. relevant is true only when the supplied abstract \
-        is genuinely useful. reason must be one short Simplified Chinese sentence based only on \
-        the supplied metadata and abstract. Do not invent facts or use outside knowledge.
+        Use these score anchors consistently:
+        - 90-100: direct evidence matching the target population, exposure/intervention, outcome, \
+          context, and requested evidence role
+        - 75-89: directly useful evidence with one non-core limitation or a somewhat broader age/context
+        - 50-74: partially matching, adjacent, follow-up, subgroup, or useful background evidence
+        - 20-49: weak or indirect usefulness requiring substantial interpretation
+        - 5-19: minimal but identifiable usefulness
+        - 0-4: clear core mismatch
+
+        Return only JSON with exactly one integer score for every index and no explanations:
+        {"rankings":[{"index":0,"score":0}]}
 
         Original request: \(description)
-
-        Candidates:
-        \(candidateText)
+        Question profile: \(profileJSON)
+        Evidence cards:
+        \(rows)
         """
-
         let data = try await generateJSON(
             prompt: prompt,
             configuration: configuration,
-            maxTokens: max(1_200, inputs.count * 80),
-            timeout: 25
+            maxTokens: max(1_500, cards.count * 32),
+            timeout: 70
         )
-        let decoded = try decodeJSON(AIRankingResponse.self, from: data)
-        let valid = decoded.rankings.filter { inputs.indices.contains($0.index) }
-        guard valid.count == inputs.count,
-              Set(valid.map(\.index)).count == inputs.count else {
+        let decoded = try decodeJSON(AIGlobalScoreResponse.self, from: data)
+        let valid = decoded.rankings.filter { cards.indices.contains($0.index) }
+        guard !valid.isEmpty,
+              Set(valid.map(\.index)).count == valid.count else {
             throw AIPlannerError.invalidRanking
         }
         return valid
+    }
+
+    nonisolated static func abstractEvidence(
+        _ abstract: String?,
+        maxCharacters: Int = 4_000
+    ) -> String {
+        guard let abstract else { return "No abstract available" }
+        let clean = normalizedEvidenceText(abstract)
+        guard !clean.isEmpty else { return "No abstract available" }
+        guard maxCharacters > 0 else { return "" }
+        guard clean.count > maxCharacters else { return clean }
+        let separator = " … "
+        let available = max(2, maxCharacters - separator.count)
+        let headCount = available / 2
+        return String(clean.prefix(headCount))
+            + separator
+            + String(clean.suffix(available - headCount))
+    }
+
+    nonisolated static func passageEvidence(
+        _ hit: PassageHit,
+        maxCharacters: Int = 1_200
+    ) -> String {
+        let clean = normalizedEvidenceText(hit.paragraph.text)
+        guard maxCharacters > 0 else { return "" }
+        guard clean.count > maxCharacters else { return clean }
+        let lower = clean.lowercased()
+        let focusOffset = hit.matchedTerms.compactMap { term -> Int? in
+            guard let range = lower.range(of: term.lowercased()) else { return nil }
+            return lower.distance(from: lower.startIndex, to: range.lowerBound)
+        }.min()
+        guard let focusOffset else { return String(clean.prefix(maxCharacters)) + " …" }
+        let characters = Array(clean)
+        let halfWindow = maxCharacters / 2
+        var start = max(0, focusOffset - halfWindow)
+        let end = min(characters.count, start + maxCharacters)
+        start = max(0, end - maxCharacters)
+        return (start > 0 ? "… " : "")
+            + String(characters[start..<end])
+            + (end < characters.count ? " …" : "")
+    }
+
+    private nonisolated static func normalizedEvidenceText(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func translateBatch(
@@ -662,28 +749,38 @@ struct AIQueryPlanner {
         body: [String: Any],
         timeout: TimeInterval = 30
     ) async throws -> Data {
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = timeout
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("RagBio/0.4 AI search planner", forHTTPHeaderField: "User-Agent")
-        for (name, value) in headers {
-            request.setValue(value, forHTTPHeaderField: name)
-        }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let requestBody = try JSONSerialization.data(withJSONObject: body)
+        let maximumAttempts = 3
+        for attempt in 0..<maximumAttempts {
+            try Task.checkCancellation()
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = timeout
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("RagBio/0.4 AI search planner", forHTTPHeaderField: "User-Agent")
+            for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+            request.httpBody = requestBody
 
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw AIPlannerError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw AIPlannerError.invalidResponse
+            }
+            if (200..<300).contains(http.statusCode) { return data }
+            if [429, 503].contains(http.statusCode), attempt < maximumAttempts - 1 {
+                let delay = http.value(forHTTPHeaderField: "Retry-After")
+                    .flatMap(Double.init)
+                    .map { min(30, max(0.5, $0)) }
+                    ?? pow(2, Double(attempt))
+                try await Task.sleep(for: .seconds(delay))
+                continue
+            }
             let raw = String(data: data, encoding: .utf8) ?? "未知错误"
             throw AIPlannerError.api(
                 status: http.statusCode,
                 message: String(raw.prefix(500))
             )
         }
-        return data
+        throw AIPlannerError.invalidResponse
     }
 
     private func endpoint(_ baseURL: String, path: String) throws -> URL {
@@ -706,7 +803,13 @@ struct AIQueryPlanner {
             openAccessOnly: plan.openAccessOnly,
             sort: plan.sort,
             explanation: plan.explanation,
-            pubMedQuery: plan.pubMedQuery
+            pubMedQuery: plan.pubMedQuery,
+            questionProfile: plan.questionProfile,
+            openAlexQueries: plan.effectiveOpenAlexQueries
+                .map(OpenAlexQueryNormalizer.normalize)
+                .filter { !$0.isEmpty },
+            pubMedQueries: plan.effectivePubMedQueries,
+            clinicalTrialsQueries: plan.effectiveClinicalTrialsQueries
         )
     }
 

@@ -138,12 +138,13 @@ enum SearchHistoryAIStage: String, Codable, Equatable {
     case localCandidates
     case coarseRanking
     case evidenceRanking
+    case globalEvidenceRanking
 
     static func completed(
         coarse: AIRerankState,
         evidence: AISecondRerankState
     ) -> SearchHistoryAIStage {
-        if case .completed = evidence { return .evidenceRanking }
+        if case .completed = evidence { return .globalEvidenceRanking }
         if case .completed = coarse { return .coarseRanking }
         return .localCandidates
     }
@@ -159,6 +160,7 @@ struct SearchHistorySnapshot: Encodable, Equatable {
     var openAccessOnly: Bool
     var allWorks: [Work]
     var rankedWorks: [Work]
+    var candidateWorks: [Work] = []
     var totalCount: Int
     var currentPage: Int
     var selectedWorkID: Work.ID?
@@ -166,6 +168,7 @@ struct SearchHistorySnapshot: Encodable, Equatable {
     var aiReasons: [String: String]
     var aiScores: [String: Int]
     var aiEvidenceLevels: [String: String]
+    var evidenceCards: [String: StructuredEvidenceCard] = [:]
     var aiSearchNotice: String?
     var pubMedNotice: String?
     var searchTimingSummary: String?
@@ -180,8 +183,10 @@ struct SearchHistorySnapshot: Encodable, Equatable {
 extension SearchHistorySnapshot: Decodable {
     private enum CodingKeys: String, CodingKey {
         case revision, displayQuery, retrievalQuery, sort, fromYearEnabled, fromYear
-        case openAccessOnly, allWorks, rankedWorks, totalCount, currentPage, selectedWorkID
-        case lastAIPlan, aiReasons, aiScores, aiEvidenceLevels, aiSearchNotice, pubMedNotice
+        case openAccessOnly, allWorks, rankedWorks, candidateWorks, totalCount, currentPage
+        case selectedWorkID
+        case lastAIPlan, aiReasons, aiScores, aiEvidenceLevels, evidenceCards
+        case aiSearchNotice, pubMedNotice
         case searchTimingSummary, fullTextReviewSummaries, articleSummaries
         case currentEvidenceTable, currentFieldScanReport, decisionFilter, completedAIStage
     }
@@ -197,6 +202,8 @@ extension SearchHistorySnapshot: Decodable {
         openAccessOnly = try values.decode(Bool.self, forKey: .openAccessOnly)
         allWorks = try values.decode([Work].self, forKey: .allWorks)
         rankedWorks = try values.decode([Work].self, forKey: .rankedWorks)
+        candidateWorks = try values.decodeIfPresent([Work].self, forKey: .candidateWorks)
+            ?? rankedWorks
         totalCount = try values.decode(Int.self, forKey: .totalCount)
         currentPage = try values.decode(Int.self, forKey: .currentPage)
         selectedWorkID = try values.decodeIfPresent(Work.ID.self, forKey: .selectedWorkID)
@@ -204,6 +211,10 @@ extension SearchHistorySnapshot: Decodable {
         aiReasons = try values.decode([String: String].self, forKey: .aiReasons)
         aiScores = try values.decode([String: Int].self, forKey: .aiScores)
         aiEvidenceLevels = try values.decode([String: String].self, forKey: .aiEvidenceLevels)
+        evidenceCards = try values.decodeIfPresent(
+            [String: StructuredEvidenceCard].self,
+            forKey: .evidenceCards
+        ) ?? [:]
         aiSearchNotice = try values.decodeIfPresent(String.self, forKey: .aiSearchNotice)
         pubMedNotice = try values.decodeIfPresent(String.self, forKey: .pubMedNotice)
         searchTimingSummary = try values.decodeIfPresent(String.self, forKey: .searchTimingSummary)

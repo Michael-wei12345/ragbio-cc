@@ -17,8 +17,9 @@ actor FullTextService {
         contactEmail: String? = nil,
         semanticScholarAPIKey: String? = nil
     ) async throws -> FullTextDocument {
-        if let cached = await cache.load(workID: work.id) {
-            return cached
+        let cacheKeys = Self.cacheKeys(for: work)
+        for key in cacheKeys {
+            if let cached = await cache.load(workID: key) { return cached }
         }
 
         var errors: [String] = []
@@ -31,6 +32,7 @@ actor FullTextService {
         publicPDFs.append(contentsOf: work.locations.compactMap(\.pdfURL))
         publicPDFs = publicPDFs.uniqued()
         for pdfURL in publicPDFs {
+            try Task.checkCancellation()
             do {
                 let document = try await fetchPDF(
                     urlString: pdfURL,
@@ -38,18 +40,21 @@ actor FullTextService {
                     source: .publisherPDF,
                     apiKey: nil
                 )
-                await cache.save(document)
+                await cache.save(document, aliases: cacheKeys)
                 return document
             } catch {
+                try Task.checkCancellation()
                 errors.append("开放 PDF：\(error.localizedDescription)")
             }
         }
 
+        try Task.checkCancellation()
         do {
             let document = try await fetchEuropePMC(work: work)
-            await cache.save(document)
+            await cache.save(document, aliases: cacheKeys)
             return document
         } catch {
+            try Task.checkCancellation()
             errors.append("Europe PMC：\(error.localizedDescription)")
         }
 
@@ -67,9 +72,10 @@ actor FullTextService {
                         source: .openAlexTEI,
                         sourceURL: xmlURL
                     )
-                    await cache.save(document)
+                    await cache.save(document, aliases: cacheKeys)
                     return document
                 } catch {
+                    try Task.checkCancellation()
                     errors.append("OpenAlex TEI：\(error.localizedDescription)")
                 }
             } else {
@@ -93,13 +99,15 @@ actor FullTextService {
                             source: .unpaywallPDF,
                             apiKey: nil
                         )
-                        await cache.save(document)
+                        await cache.save(document, aliases: cacheKeys)
                         return document
                     } catch {
+                        try Task.checkCancellation()
                         errors.append("Unpaywall PDF：\(error.localizedDescription)")
                     }
                 }
             } catch {
+                try Task.checkCancellation()
                 errors.append("Unpaywall：\(error.localizedDescription)")
             }
         }
@@ -113,9 +121,10 @@ actor FullTextService {
                         source: .openAlexPDF,
                         apiKey: apiKey
                     )
-                    await cache.save(document)
+                    await cache.save(document, aliases: cacheKeys)
                     return document
                 } catch {
+                    try Task.checkCancellation()
                     errors.append("OpenAlex PDF：\(error.localizedDescription)")
                 }
             } else {
@@ -135,14 +144,16 @@ actor FullTextService {
                         source: .publisherPDF,
                         apiKey: nil
                     )
-                    await cache.save(document)
+                    await cache.save(document, aliases: cacheKeys)
                     return document
                 }
             } catch {
+                try Task.checkCancellation()
                 errors.append("Semantic Scholar：\(error.localizedDescription)")
             }
         }
 
+        try Task.checkCancellation()
         if let abstract = work.abstractText {
             let paragraph = FullTextParagraph(
                 id: "abstract-1",
@@ -175,8 +186,8 @@ actor FullTextService {
     }
 
     func loadForPageAnalysis(work: Work) async throws -> FullTextDocument {
-        if let cached = await cache.load(workID: work.id) {
-            return cached
+        for key in Self.cacheKeys(for: work) {
+            if let cached = await cache.load(workID: key) { return cached }
         }
         guard let abstract = work.abstractText else {
             throw FullTextError.noUsableSource
@@ -214,7 +225,7 @@ actor FullTextService {
             source: .importedPDF,
             sourceURL: url.path
         )
-        await cache.save(document)
+        await cache.save(document, aliases: Self.cacheKeys(for: work))
         return document
     }
 
@@ -223,31 +234,54 @@ actor FullTextService {
         failedEndpointCooldowns.removeAll()
     }
 
+    func clearCache(work: Work) async {
+        for key in Self.cacheKeys(for: work) { await cache.remove(workID: key) }
+        failedEndpointCooldowns.removeAll()
+    }
+
+    private nonisolated static func cacheKeys(for work: Work) -> [String] {
+        var keys = [work.id]
+        if let doi = work.normalizedDOI { keys.append("doi:\(doi)") }
+        if let pmid = work.normalizedPMID { keys.append("pmid:\(pmid)") }
+        if let pmcid = work.normalizedPMCID { keys.append("pmcid:\(pmcid.lowercased())") }
+        var seen = Set<String>()
+        return keys.filter { seen.insert($0.lowercased()).inserted }
+    }
+
     private func fetchEuropePMC(work: Work) async throws -> FullTextDocument {
         if let pmcid = work.normalizedPMCID {
             return try await fetchEuropePMCXML(pmcid: pmcid, work: work)
         }
 
-        var queries: [String] = []
+        var searches: [EuropePMCSearch] = []
         if let doi = work.normalizedDOI {
-            queries.append("DOI:\(doi)")
+            searches.append(EuropePMCSearch(query: "DOI:\(doi)", identity: .doi(doi)))
         }
         if let pmid = work.normalizedPMID {
-            queries.append("EXT_ID:\(pmid) AND SRC:MED")
+            searches.append(
+                EuropePMCSearch(
+                    query: "EXT_ID:\(pmid) AND SRC:MED",
+                    identity: .pmid(pmid)
+                )
+            )
         }
-        let escapedTitle = work.title.replacingOccurrences(of: "\"", with: "\\\"")
-        if let year = work.publicationYear {
-            queries.append("TITLE:\"\(escapedTitle)\" AND FIRST_PDATE:[\(year) TO \(year)]")
-        } else {
-            queries.append("TITLE:\"\(escapedTitle)\"")
+        if !BibliographicTitleResolver.isPlaceholder(work.title) {
+            let escapedTitle = work.title.replacingOccurrences(of: "\"", with: "\\\"")
+            let query: String
+            if let year = work.publicationYear {
+                query = "TITLE:\"\(escapedTitle)\" AND FIRST_PDATE:[\(year) TO \(year)]"
+            } else {
+                query = "TITLE:\"\(escapedTitle)\""
+            }
+            searches.append(EuropePMCSearch(query: query, identity: .title(work.title)))
         }
 
-        for query in queries {
+        for searchRequest in searches {
             var search = URLComponents(
                 string: "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
             )
             search?.queryItems = [
-                URLQueryItem(name: "query", value: query),
+                URLQueryItem(name: "query", value: searchRequest.query),
                 URLQueryItem(name: "format", value: "json"),
                 URLQueryItem(name: "resultType", value: "core"),
                 URLQueryItem(name: "pageSize", value: "3")
@@ -256,7 +290,9 @@ actor FullTextService {
             let searchData = try await fetchData(from: searchURL, accept: "application/json")
             let result = try JSONDecoder().decode(EuropePMCSearchResponse.self, from: searchData)
             if let pmcid = result.resultList.result
-                .first(where: { $0.pmcid != nil })?.pmcid {
+                .first(where: {
+                    $0.pmcid != nil && searchRequest.identity.matches($0)
+                })?.pmcid {
                 return try await fetchEuropePMCXML(pmcid: pmcid, work: work)
             }
         }
@@ -330,6 +366,7 @@ actor FullTextService {
         source: FullTextSource,
         apiKey: String?
     ) async throws -> FullTextDocument {
+        try Task.checkCancellation()
         // ponytail: OpenAlex still returns redirecting HTTP PDF links; use HTTPS for ATS.
         let secureURLString = urlString.replacingOccurrences(
             of: "http://",
@@ -341,6 +378,7 @@ actor FullTextService {
         }
         let url = apiKey.map { authenticatedContentURL(secureURLString, apiKey: $0) } ?? rawURL
         let data = try await fetchData(from: url, accept: "application/pdf")
+        try Task.checkCancellation()
         if let endpoint = UserDefaults.standard.string(forKey: SettingsKeys.grobidEndpoint),
            !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let document = try? await GROBIDClient.parse(
@@ -358,6 +396,7 @@ actor FullTextService {
         try data.write(to: temporaryURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
 
+        try Task.checkCancellation()
         return try PDFTextParser.parse(
             url: temporaryURL,
             workID: work.id,
@@ -463,8 +502,49 @@ private struct EuropePMCSearchResponse: Decodable {
     }
 
     struct Result: Decodable {
+        let id: String?
+        let source: String?
+        let doi: String?
         let pmcid: String?
         let title: String?
+    }
+}
+
+private struct EuropePMCSearch {
+    let query: String
+    let identity: EuropePMCIdentity
+}
+
+private enum EuropePMCIdentity {
+    case doi(String)
+    case pmid(String)
+    case title(String)
+
+    func matches(_ result: EuropePMCSearchResponse.Result) -> Bool {
+        switch self {
+        case let .doi(expected):
+            return Self.normalizedDOI(result.doi) == Self.normalizedDOI(expected)
+        case let .pmid(expected):
+            return result.source?.caseInsensitiveCompare("MED") == .orderedSame
+                && result.id == expected
+        case let .title(expected):
+            guard let title = result.title else { return false }
+            return BibliographicTitleResolver.normalizedForMatching(title)
+                == BibliographicTitleResolver.normalizedForMatching(expected)
+        }
+    }
+
+    private static func normalizedDOI(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value
+            .lowercased()
+            .replacingOccurrences(
+                of: #"^(https?://(dx\.)?doi\.org/|doi:\s*)"#,
+                with: "",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
     }
 }
 
@@ -499,36 +579,198 @@ private struct SemanticScholarPDF: Decodable {
 }
 
 actor FullTextCache {
-    private let directory: URL
+    static let defaultMaximumBytes: Int64 = 10 * 1_024 * 1_024 * 1_024
+    static let minimumFreeDiskBytes: Int64 = 5 * 1_024 * 1_024 * 1_024
 
-    init() {
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        directory = applicationSupport
-            .appendingPathComponent("RagBio", isDirectory: true)
-            .appendingPathComponent("FullText", isDirectory: true)
+    private let directory: URL
+    private let maximumBytes: Int64
+    private let maintenanceInterval: TimeInterval
+    private let aliasIndexName = "aliases.json"
+    private var aliasTargets: [String: String]?
+    private var lastMaintenanceAt: Date?
+
+    init(
+        directory: URL? = nil,
+        maximumBytes: Int64 = FullTextCache.defaultMaximumBytes,
+        maintenanceInterval: TimeInterval = 60
+    ) {
+        if let directory {
+            self.directory = directory
+        } else {
+            let applicationSupport = FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            ).first!
+            self.directory = applicationSupport
+                .appendingPathComponent("RagBio", isDirectory: true)
+                .appendingPathComponent("FullText", isDirectory: true)
+        }
+        self.maximumBytes = max(1, maximumBytes)
+        self.maintenanceInterval = max(0, maintenanceInterval)
         try? FileManager.default.createDirectory(
-            at: directory,
+            at: self.directory,
             withIntermediateDirectories: true
         )
     }
 
     func load(workID: String) -> FullTextDocument? {
-        let url = fileURL(workID: workID)
+        let directURL = fileURL(workID: workID)
+        if let document = decodeDocument(at: directURL) {
+            touch(directURL)
+            return document
+        }
+        let target = loadAliasTargets()[normalizedAlias(workID)]
+        guard let target else { return nil }
+        let url = fileURL(workID: target)
+        guard let document = decodeDocument(at: url) else { return nil }
+        touch(url)
+        return document
+    }
+
+    private func decodeDocument(at url: URL) -> FullTextDocument? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(FullTextDocument.self, from: data)
     }
 
-    func save(_ document: FullTextDocument) {
+    func save(_ document: FullTextDocument, aliases: [String] = []) {
         guard document.source.isFullText,
               let data = try? JSONEncoder().encode(document) else { return }
-        try? data.write(to: fileURL(workID: document.workID), options: .atomic)
+        let canonicalURL = fileURL(workID: document.workID)
+        try? data.write(to: canonicalURL, options: .atomic)
+        touch(canonicalURL)
+
+        var targets = loadAliasTargets()
+        let keys = ([document.workID] + aliases).uniqued()
+        for key in keys {
+            targets[normalizedAlias(key)] = document.workID
+            let legacyURL = fileURL(workID: key)
+            if legacyURL != canonicalURL {
+                try? FileManager.default.removeItem(at: legacyURL)
+            }
+        }
+        aliasTargets = targets
+        saveAliasTargets()
+        maintainStorageIfNeeded()
     }
 
     func remove(workID: String) {
+        var targets = loadAliasTargets()
+        let normalized = normalizedAlias(workID)
+        let canonical = targets[normalized] ?? workID
+        try? FileManager.default.removeItem(at: fileURL(workID: canonical))
         try? FileManager.default.removeItem(at: fileURL(workID: workID))
+        targets = targets.filter { $0.value != canonical && $0.key != normalized }
+        aliasTargets = targets
+        saveAliasTargets()
+    }
+
+    func removeAll() {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        for url in urls { try? FileManager.default.removeItem(at: url) }
+        aliasTargets = [:]
+        lastMaintenanceAt = nil
+    }
+
+    func sizeInBytes() -> Int64 {
+        cacheFiles().reduce(0) { partial, item in partial + item.size }
+    }
+
+    func enforceStoragePolicy() {
+        maintainStorage(force: true)
+    }
+
+    private func maintainStorageIfNeeded() {
+        if let lastMaintenanceAt,
+           Date().timeIntervalSince(lastMaintenanceAt) < maintenanceInterval {
+            return
+        }
+        maintainStorage(force: true)
+    }
+
+    private func maintainStorage(force: Bool) {
+        guard force else { return }
+        lastMaintenanceAt = Date()
+        let files = cacheFiles().sorted { $0.modifiedAt < $1.modifiedAt }
+        let total = files.reduce(Int64(0)) { $0 + $1.size }
+        let available = try? directory.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ).volumeAvailableCapacityForImportantUsage
+        let overLimit = max(0, total - maximumBytes)
+        let lowDisk = max(0, Self.minimumFreeDiskBytes - Int64(available ?? Int64.max))
+        let bytesToFree = max(overLimit, lowDisk)
+        guard bytesToFree > 0 else { return }
+
+        var freed: Int64 = 0
+        var deletedCanonicalIDs = Set<String>()
+        for file in files where freed < bytesToFree {
+            guard file.url.lastPathComponent != aliasIndexName else { continue }
+            if let document = decodeDocument(at: file.url) {
+                deletedCanonicalIDs.insert(document.workID)
+            }
+            if (try? FileManager.default.removeItem(at: file.url)) != nil {
+                freed += file.size
+            }
+        }
+        if !deletedCanonicalIDs.isEmpty {
+            var targets = loadAliasTargets()
+            targets = targets.filter { !deletedCanonicalIDs.contains($0.value) }
+            aliasTargets = targets
+            saveAliasTargets()
+        }
+    }
+
+    private func cacheFiles() -> [(url: URL, size: Int64, modifiedAt: Date)] {
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey, .fileSizeKey, .contentModificationDateKey
+        ]
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return urls.compactMap { url in
+            guard url.lastPathComponent != aliasIndexName,
+                  let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true else { return nil }
+            return (
+                url,
+                Int64(values.fileSize ?? 0),
+                values.contentModificationDate ?? .distantPast
+            )
+        }
+    }
+
+    private func loadAliasTargets() -> [String: String] {
+        if let aliasTargets { return aliasTargets }
+        let url = directory.appendingPathComponent(aliasIndexName)
+        let decoded = (try? Data(contentsOf: url)).flatMap {
+            try? JSONDecoder().decode([String: String].self, from: $0)
+        } ?? [:]
+        aliasTargets = decoded
+        return decoded
+    }
+
+    private func saveAliasTargets() {
+        guard let aliasTargets,
+              let data = try? JSONEncoder().encode(aliasTargets) else { return }
+        try? data.write(
+            to: directory.appendingPathComponent(aliasIndexName),
+            options: .atomic
+        )
+    }
+
+    private func normalizedAlias(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func touch(_ url: URL) {
+        try? FileManager.default.setAttributes(
+            [.modificationDate: Date()],
+            ofItemAtPath: url.path
+        )
     }
 
     private func fileURL(workID: String) -> URL {

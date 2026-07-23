@@ -153,6 +153,7 @@ enum PDFTextParser {
 
         var pages: [PageText] = []
         for pageIndex in 0..<pdf.pageCount {
+            try Task.checkCancellation()
             guard let page = pdf.page(at: pageIndex) else { continue }
             let extracted = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let text = extracted.count >= 30
@@ -171,6 +172,7 @@ enum PDFTextParser {
         var reachedReferences = false
         var paragraphs: [FullTextParagraph] = []
         for page in pages {
+            try Task.checkCancellation()
             let blocks = cleanedBlocks(
                 from: page.lines,
                 repeatedLines: repeatedLines,
