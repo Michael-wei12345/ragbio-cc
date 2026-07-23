@@ -251,7 +251,6 @@ import Testing
             profile: nil,
             cards: [card],
             works: [work],
-            localScores: [88],
             configuration: provider
         )
 
@@ -261,7 +260,12 @@ import Testing
         }
         #expect(!calibrationPrompts.isEmpty)
         #expect(calibrationPrompts.allSatisfy { !$0.contains(#""reason""#) })
-        #expect(calibrationPrompts.allSatisfy { $0.contains("90-100: direct evidence") })
+        #expect(calibrationPrompts.allSatisfy { !$0.contains("local=") })
+        #expect(calibrationPrompts.allSatisfy {
+            $0.contains("90-100: direct primary results evidence")
+                && $0.contains("Within the same study family")
+                && $0.contains("useful background and citation-chasing sources")
+        })
     }
 
     @Test func globalScoresFilterFourKeepFiveAndKeepStableTies() {
@@ -274,19 +278,21 @@ import Testing
         #expect(ranked == [2, 3, 4, 0])
     }
 
-    @Test func deterministicRubricAnchorsGlobalModelScores() {
+    @Test func localSafetyRulesCapCoreMismatchesAndProtectStrongPrimaryEvidence() {
         func card(
             _ population: EvidenceMatch,
-            outcome: EvidenceMatch = .match
+            intervention: EvidenceMatch = .match,
+            outcome: EvidenceMatch = .match,
+            role: EvidenceRole = .primary
         ) -> StructuredEvidenceCard {
             StructuredEvidenceCard(
                 workID: UUID().uuidString,
                 population: population,
-                interventionOrExposure: .match,
+                interventionOrExposure: intervention,
                 comparator: .unclear,
                 outcome: outcome,
                 context: .match,
-                role: .primary,
+                role: role,
                 reportsEffectEstimate: true,
                 reportsSampleSize: true,
                 hasComparatorGroup: true,
@@ -297,19 +303,143 @@ import Testing
                 evidenceBasis: "abstract"
             )
         }
-        let scores = SearchStore.anchoredGlobalScores(
-            modelScores: [0: 99, 1: 80, 2: 90],
-            localScores: [4, 80, 70],
+        let scores = SearchStore.safetyAdjustedGlobalScores(
+            modelScores: [0: 99, 1: 22, 2: 90, 3: 22, 4: 94],
             cards: [
                 card(.mismatch),
                 card(.match),
-                card(.match, outcome: .mismatch)
+                card(.match, outcome: .mismatch),
+                card(.match, intervention: .unclear),
+                card(.match, role: .background)
             ]
         )
 
         #expect(scores[0] == 4)
-        #expect(scores[1] == 80)
+        #expect(scores[1] == 70)
         #expect(scores[2] == 4)
+        #expect(scores[3] == 22)
+        #expect(scores[4] == 94)
+    }
+
+    @Test func globalScoringFingerprintIsStableAndTracksEvidenceAndModel() {
+        let work = makeWork(title: "Target study", abstract: "Original evidence")
+        let configuration = AIProviderConfiguration(
+            provider: .openAI,
+            apiKey: "not-fingerprinted",
+            model: "model-a",
+            baseURL: "https://example.test"
+        )
+        let inputs = [
+            AIEvidenceRankingInput(
+                work: work,
+                abstract: work.abstractText,
+                passages: [],
+                source: .abstract
+            )
+        ]
+        let first = SearchStore.globalScoringFingerprint(
+            description: "Target question",
+            profile: nil,
+            inputs: inputs,
+            configuration: configuration
+        )
+        let repeated = SearchStore.globalScoringFingerprint(
+            description: "Target question",
+            profile: nil,
+            inputs: inputs,
+            configuration: configuration
+        )
+        let changedEvidence = SearchStore.globalScoringFingerprint(
+            description: "Target question",
+            profile: nil,
+            inputs: [
+                AIEvidenceRankingInput(
+                    work: work,
+                    abstract: "Changed evidence",
+                    passages: [],
+                    source: .abstract
+                )
+            ],
+            configuration: configuration
+        )
+        let changedModel = SearchStore.globalScoringFingerprint(
+            description: "Target question",
+            profile: nil,
+            inputs: inputs,
+            configuration: AIProviderConfiguration(
+                provider: .openAI,
+                apiKey: "another-key",
+                model: "model-b",
+                baseURL: "https://example.test"
+            )
+        )
+        let changedKeyOnly = SearchStore.globalScoringFingerprint(
+            description: "Target question",
+            profile: nil,
+            inputs: inputs,
+            configuration: AIProviderConfiguration(
+                provider: .openAI,
+                apiKey: "another-key",
+                model: "model-a",
+                baseURL: "https://example.test"
+            )
+        )
+
+        #expect(first == repeated)
+        #expect(first != changedEvidence)
+        #expect(first != changedModel)
+        #expect(first == changedKeyOnly)
+    }
+
+    @Test func completedSnapshotCanReuseOnlyAnExactGlobalScoringFingerprint() {
+        let work = makeWork()
+        let card = StructuredEvidenceCard(
+            workID: work.id,
+            population: .match,
+            interventionOrExposure: .match,
+            comparator: .unclear,
+            outcome: .match,
+            context: .match,
+            role: .primary,
+            reportsEffectEstimate: true,
+            reportsSampleSize: true,
+            hasComparatorGroup: true,
+            reportsFollowUp: true,
+            uniqueContribution: false,
+            confidence: .medium,
+            studyFamilyID: nil,
+            evidenceBasis: "abstract"
+        )
+        var snapshot = makeSnapshot(query: "target", works: [work])
+        snapshot.candidateWorks = [work]
+        snapshot.rankedWorks = [work]
+        snapshot.aiScores = [work.id: 88]
+        snapshot.aiEvidenceLevels = [work.id: "摘要证据"]
+        snapshot.evidenceCards = [work.id: card]
+        snapshot.globalScoreFingerprint = "exact"
+        snapshot.completedAIStage = .globalEvidenceRanking
+
+        #expect(
+            SearchStore.canReuseGlobalRanking(
+                from: snapshot,
+                candidates: [work],
+                fingerprint: "exact"
+            )
+        )
+        #expect(
+            !SearchStore.canReuseGlobalRanking(
+                from: snapshot,
+                candidates: [work],
+                fingerprint: "changed"
+            )
+        )
+        #expect(
+            !SearchStore.canReuseGlobalRanking(
+                from: snapshot,
+                candidates: [makeWork(id: "different")],
+                fingerprint: "exact"
+            )
+        )
     }
 
     @Test func conflictingCoreMismatchRequiresSinglePaperVerification() {

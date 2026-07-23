@@ -297,7 +297,6 @@ struct HybridRetrieverABBenchmarkTests {
             profile: record.snapshot.lastAIPlan?.questionProfile,
             cards: newCards,
             works: candidates,
-            localScores: localScores,
             configuration: configuration
         )
         let returned = Set(globalOutputs.map(\.index))
@@ -308,7 +307,6 @@ struct HybridRetrieverABBenchmarkTests {
                 profile: record.snapshot.lastAIPlan?.questionProfile,
                 cards: missing.map { newCards[$0] },
                 works: missing.map { candidates[$0] },
-                localScores: missing.map { localScores[$0] },
                 configuration: configuration
             )
             globalOutputs += retry.compactMap { output in
@@ -320,9 +318,8 @@ struct HybridRetrieverABBenchmarkTests {
             globalOutputs,
             candidateCount: candidates.count
         )
-        let newScoresByIndex = SearchStore.anchoredGlobalScores(
+        let newScoresByIndex = SearchStore.safetyAdjustedGlobalScores(
             modelScores: modelScores,
-            localScores: localScores,
             cards: newCards
         )
         let newRankedIndices = SearchStore.globallyRankedIndices(

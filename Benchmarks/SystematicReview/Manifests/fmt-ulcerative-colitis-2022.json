@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "id": "fmt-ulcerative-colitis-2022",
+  "review": {
+    "citation": "Xiang L, et al. Efficacy and safety of fecal microbiota transplantation for the induction of remission in active ulcerative colitis. Annals of Translational Medicine. 2022.",
+    "sourceURL": "https://pmc.ncbi.nlm.nih.gov/articles/PMC9372650/",
+    "searchCutoff": "2021-12-31",
+    "identity": {
+      "pmid": "35965832",
+      "doi": "10.21037/atm-22-3236",
+      "registryIDs": [],
+      "title": "Efficacy and safety of fecal microbiota transplantation for the induction of remission in active ulcerative colitis"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "Is fecal microbiota transplantation effective and safe for inducing remission in active ulcerative colitis?",
+    "structuredInput": "In patients with active ulcerative colitis, compare fecal microbiota transplantation with placebo or standard treatment for clinical and endoscopic remission and serious adverse events; include randomized controlled trials.",
+    "eligibilityCriteria": [
+      "Active ulcerative colitis",
+      "Fecal microbiota transplantation",
+      "Placebo or suitable standard-treatment comparator",
+      "Randomized controlled trial",
+      "Reports clinical remission, endoscopic remission, or serious adverse events"
+    ],
+    "profile": {
+      "question_type": "intervention",
+      "population": ["active ulcerative colitis"],
+      "intervention_or_exposure": ["fecal microbiota transplantation"],
+      "comparator": ["placebo", "standard treatment"],
+      "outcomes": ["clinical remission", "endoscopic remission", "serious adverse events"],
+      "context": ["induction of remission"],
+      "preferred_study_designs": ["randomized controlled trial"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "brezina-2021",
+      "name": "Brezina 2021",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "34206663",
+            "doi": "10.3390/jcm10132753",
+            "registryIDs": [],
+            "title": "Fecal Microbial Transplantation versus Mesalamine Enema for Treatment of Active Left-Sided Ulcerative Colitis-Results of a Randomized Controlled Trial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pai-2021",
+      "name": "Pai 2021",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "33961887",
+            "doi": "10.1053/j.gastro.2021.04.067",
+            "registryIDs": [],
+            "title": "Results of the First Pilot Randomized Controlled Trial of Fecal Microbiota Transplant In Pediatric Ulcerative Colitis"
+          }
+        }
+      ]
+    },
+    {
+      "id": "craft-uc",
+      "name": "CRAFT UC",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "34514495",
+            "doi": "10.1093/ecco-jcc/jjab165",
+            "registryIDs": [],
+            "title": "Use of fecal transplantation with a novel diet for mild to moderate active ulcerative colitis: The CRAFT UC randomized controlled trial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lotus",
+      "name": "LOTUS",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "34863330",
+            "doi": "10.1016/S2468-1253(21)00400-3",
+            "registryIDs": [],
+            "title": "Lyophilised oral faecal microbiota transplantation for ulcerative colitis (LOTUS): a randomised, double-blind, placebo-controlled trial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "crothers-2021",
+      "name": "Crothers 2021",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "34238227",
+            "doi": "10.1186/s12876-021-01856-9",
+            "registryIDs": [],
+            "title": "Daily, oral FMT for long-term maintenance therapy in ulcerative colitis: results of a single-center, prospective, randomized pilot study"
+          }
+        }
+      ]
+    },
+    {
+      "id": "costello-2019",
+      "name": "Costello 2019",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "30644982",
+            "doi": "10.1001/jama.2018.20046",
+            "registryIDs": [],
+            "title": "Effect of Fecal Microbiota Transplantation on 8-Week Remission in Patients With Ulcerative Colitis: A Randomized Clinical Trial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "paramsothy-2017",
+      "name": "Paramsothy 2017",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "28214091",
+            "doi": "10.1016/S0140-6736(17)30182-4",
+            "registryIDs": [],
+            "title": "Multidonor intensive faecal microbiota transplantation for active ulcerative colitis: a randomised placebo-controlled trial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "rossen-2015",
+      "name": "Rossen 2015",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "25836986",
+            "doi": "10.1053/j.gastro.2015.03.045",
+            "registryIDs": [],
+            "title": "Findings From a Randomized Controlled Trial of Fecal Transplantation for Patients With Ulcerative Colitis"
+          }
+        }
+      ]
+    },
+    {
+      "id": "moayyedi-2015",
+      "name": "Moayyedi 2015",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "25857665",
+            "doi": "10.1053/j.gastro.2015.04.001",
+            "registryIDs": [],
+            "title": "Fecal Microbiota Transplantation Induces Remission in Patients With Active Ulcerative Colitis in a Randomized Controlled Trial"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": "35965832",
+      "doi": "10.21037/atm-22-3236",
+      "registryIDs": [],
+      "title": "Efficacy and safety of fecal microbiota transplantation for the induction of remission in active ulcerative colitis"
+    }
+  ],
+  "openAlexQueries": [
+    "active ulcerative colitis fecal microbiota transplantation randomized trial remission",
+    "ulcerative colitis FMT placebo randomized controlled trial"
+  ],
+  "pubMedQueries": [
+    "(\"Colitis, Ulcerative\"[MeSH Terms] OR \"ulcerative colitis\"[Title/Abstract]) AND (\"Fecal Microbiota Transplantation\"[MeSH Terms] OR \"fecal microbiota transplant\"[Title/Abstract] OR \"faecal microbiota transplant\"[Title/Abstract] OR FMT[Title/Abstract])",
+    "\"ulcerative colitis\"[Title/Abstract] AND (fecal[Title/Abstract] OR faecal[Title/Abstract]) AND (microbiota[Title/Abstract] OR microbial[Title/Abstract]) AND randomized controlled trial[Publication Type]"
+  ],
+  "clinicalTrialsQueries": [
+    "ulcerative colitis fecal microbiota transplantation",
+    "ulcerative colitis FMT remission"
+  ]
+}

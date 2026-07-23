@@ -1,0 +1,249 @@
+{
+  "schemaVersion": 1,
+  "id": "hip-fracture-depression-prognosis-2021",
+  "review": {
+    "citation": "Milton-Cole R, et al. Prognostic factors of depression and depressive symptoms after hip fracture surgery: systematic review. BMC Geriatrics. 2021.",
+    "sourceURL": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8502369/",
+    "searchCutoff": "2020-11-09",
+    "identity": {
+      "pmid": "34627160",
+      "doi": "10.1186/s12877-021-02514-1",
+      "registryIDs": [],
+      "title": "Prognostic factors of depression and depressive symptoms after hip fracture surgery: systematic review"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "Which factors predict depression or depressive symptoms after hip fracture surgery in adults?",
+    "structuredInput": "In adults undergoing surgery for a non-pathological hip fracture, identify demographic, clinical, psychological, biological, and social prognostic factors for incident or persistent depression or depressive symptoms after surgery; prioritize longitudinal prognostic factor studies.",
+    "eligibilityCriteria": [
+      "Adults undergoing surgery for a non-pathological hip fracture",
+      "Measures at least one candidate prognostic factor",
+      "Measures depression or depressive symptoms after surgery",
+      "Longitudinal prognostic factor analysis"
+    ],
+    "profile": {
+      "question_type": "prognosis",
+      "population": ["adults after hip fracture surgery", "older adults with hip fracture"],
+      "intervention_or_exposure": ["prognostic factors", "demographic clinical psychological biological or social factors"],
+      "comparator": ["different levels or presence of prognostic factors"],
+      "outcomes": ["incident depression", "persistent depression", "depressive symptoms"],
+      "context": ["postoperative recovery", "hip fracture surgery"],
+      "preferred_study_designs": ["longitudinal prognostic factor study", "cohort study"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "shyu-2009",
+      "name": "Shyu 2009",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "19824907",
+            "doi": "10.1111/j.1365-2648.2009.05125.x",
+            "registryIDs": [],
+            "title": "Older people with hip fracture: depression in the postoperative first year"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cristancho-2016",
+      "name": "Cristancho 2016",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "27032698",
+            "doi": "10.1017/S0033291715002974",
+            "registryIDs": [],
+            "title": "Trajectories of depressive symptoms after hip fracture"
+          }
+        }
+      ]
+    },
+    {
+      "id": "van-de-ree-2020",
+      "name": "van de Ree 2020",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "32741607",
+            "doi": "10.1016/j.injury.2020.07.049",
+            "registryIDs": [],
+            "title": "The prevalence and prognostic factors of psychological distress in older patients with a hip fracture: A longitudinal cohort study"
+          }
+        }
+      ]
+    },
+    {
+      "id": "bruggemann-2007",
+      "name": "Bruggemann 2007",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "17252203",
+            "doi": "10.1007/s10865-006-9088-x",
+            "registryIDs": [],
+            "title": "Predicting acute anxiety and depression following hip fracture"
+          }
+        }
+      ]
+    },
+    {
+      "id": "deng-2005",
+      "name": "Deng 2005",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": null,
+            "doi": null,
+            "registryIDs": [],
+            "title": "Factors related to depression in elderly patients receiving hospitalization care for hip fractures"
+          }
+        }
+      ]
+    },
+    {
+      "id": "langer-2015",
+      "name": "Langer 2015",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "25133825",
+            "doi": "10.1037/hea0000111",
+            "registryIDs": [],
+            "title": "Short-term affective recovery from hip fracture prospectively predicts depression and physical functioning"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lenze-5ht-receptors-2008",
+      "name": "Lenze serotonin receptor polymorphisms 2008",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "18334271",
+            "doi": "10.1016/j.jad.2008.02.005",
+            "registryIDs": [],
+            "title": "Association of serotonin-1A and 2A receptor promoter polymorphisms with depressive symptoms and functional recovery in elderly persons after hip fracture"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lenze-5httlpr-2005",
+      "name": "Lenze 5-HTTLPR 2005",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "15879594",
+            "doi": "10.1176/appi.ajgp.13.5.428",
+            "registryIDs": [],
+            "title": "Association of the serotonin transporter gene-linked polymorphic region (5-HTTLPR) genotype with depression in elderly persons after hip fracture"
+          }
+        }
+      ]
+    },
+    {
+      "id": "liu-2018",
+      "name": "Liu 2018",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "30113199",
+            "doi": "10.1037/rep0000130",
+            "registryIDs": [],
+            "title": "Trajectories in postoperative recovery of elderly hip-fracture patients at risk for depression: A follow-up study"
+          }
+        }
+      ]
+    },
+    {
+      "id": "matheny-2011",
+      "name": "Matheny 2011",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "22188073",
+            "doi": "10.1111/j.1532-5415.2011.03727.x",
+            "registryIDs": [],
+            "title": "Inflammatory cytokine levels and depressive symptoms in older women in the year after hip fracture: findings from the Baltimore Hip Studies"
+          }
+        }
+      ]
+    },
+    {
+      "id": "voshaar-2007",
+      "name": "Voshaar 2007",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "17698601",
+            "doi": "10.1097/JGP.0b013e318098610c",
+            "registryIDs": [],
+            "title": "Predictors of incident depression after hip fracture surgery"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lenze-onset-2007",
+      "name": "Lenze depression onset 2007",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "17233689",
+            "doi": "10.1111/j.1532-5415.2006.01017.x",
+            "registryIDs": [],
+            "title": "Onset of depression in elderly persons after hip fracture: implications for prevention and early intervention of late-life depression"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": "34627160",
+      "doi": "10.1186/s12877-021-02514-1",
+      "registryIDs": [],
+      "title": "Prognostic factors of depression and depressive symptoms after hip fracture surgery: systematic review"
+    }
+  ],
+  "openAlexQueries": [
+    "hip fracture surgery depression depressive symptoms prognostic factors longitudinal",
+    "older adults hip fracture postoperative depression predictors cohort"
+  ],
+  "pubMedQueries": [
+    "(\"Hip Fractures\"[MeSH Terms] OR \"hip fracture\"[Title/Abstract]) AND (depression[MeSH Terms] OR depression[Title/Abstract] OR depressive[Title/Abstract]) AND (prognos*[Title/Abstract] OR predict*[Title/Abstract] OR factor*[Title/Abstract] OR trajectory[Title/Abstract])",
+    "(\"hip fracture surgery\"[Title/Abstract] OR \"postoperative hip fracture\"[Title/Abstract]) AND (depression[Title/Abstract] OR \"depressive symptoms\"[Title/Abstract]) AND (cohort[Title/Abstract] OR longitudinal[Title/Abstract] OR follow-up[Title/Abstract])",
+    "(\"hip fracture\"[Title/Abstract] OR \"hip fractures\"[Title/Abstract]) AND (depression[Title/Abstract] OR depressive[Title/Abstract])"
+  ],
+  "clinicalTrialsQueries": [
+    "hip fracture surgery depression predictors"
+  ]
+}

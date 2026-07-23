@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "id": "ct-lumbar-disc-herniation-diagnosis-2012",
+  "review": {
+    "citation": "van Rijn RM, et al. Computed tomography for the diagnosis of lumbar spinal pathology in adult patients with low back pain or sciatica: a diagnostic systematic review. European Spine Journal. 2012.",
+    "sourceURL": "https://pmc.ncbi.nlm.nih.gov/articles/PMC3265600/",
+    "searchCutoff": "2009-12-31",
+    "identity": {
+      "pmid": "21915747",
+      "doi": "10.1007/s00586-011-2012-2",
+      "registryIDs": [],
+      "title": "Computed tomography for the diagnosis of lumbar spinal pathology in adult patients with low back pain or sciatica: a diagnostic systematic review"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "How accurately does computed tomography diagnose lumbar disc herniation in adults with low back pain or sciatica?",
+    "structuredInput": "In adults with low back pain, radicular leg pain, or sciatica who are suspected of lumbar disc herniation, evaluate computed tomography as the index test against surgery or an expert reference standard for diagnostic sensitivity and specificity; prioritize diagnostic accuracy studies.",
+    "eligibilityCriteria": [
+      "Adults with low back pain, radicular pain, or sciatica",
+      "Computed tomography used to diagnose lumbar disc herniation",
+      "Surgery or a clinically acceptable expert reference standard",
+      "Reports data usable to assess diagnostic accuracy"
+    ],
+    "profile": {
+      "question_type": "diagnosis",
+      "population": ["adults with low back pain or sciatica", "suspected lumbar disc herniation"],
+      "intervention_or_exposure": ["computed tomography", "lumbar CT"],
+      "comparator": ["surgical findings", "expert reference standard"],
+      "outcomes": ["diagnostic sensitivity", "diagnostic specificity", "lumbar disc herniation"],
+      "context": ["diagnostic accuracy"],
+      "preferred_study_designs": ["diagnostic accuracy study"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "firooznia-1984",
+      "name": "Firooznia 1984",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "6607651",
+            "doi": "10.2214/ajr.142.3.587",
+            "registryIDs": [],
+            "title": "CT of lumbar spine disk herniation: correlation with surgical findings"
+          }
+        }
+      ]
+    },
+    {
+      "id": "forristall-1988",
+      "name": "Forristall 1988",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "3206299",
+            "doi": "10.1097/00007632-198809000-00013",
+            "registryIDs": [],
+            "title": "Magnetic resonance imaging and contrast CT of the lumbar spine. Comparison of diagnostic methods and correlation with surgical findings"
+          }
+        }
+      ]
+    },
+    {
+      "id": "jackson-ct-discography-1989",
+      "name": "Jackson CT, myelography, and discography 1989",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "2694388",
+            "doi": "10.1097/00007632-198912000-00012",
+            "registryIDs": [],
+            "title": "The neuroradiographic diagnosis of lumbar herniated nucleus pulposus: I. A comparison of computed tomography (CT), myelography, CT-myelography, discography, and CT-discography"
+          }
+        }
+      ]
+    },
+    {
+      "id": "jackson-mri-1989",
+      "name": "Jackson CT, myelography, and MRI 1989",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "2694389",
+            "doi": "10.1097/00007632-198912000-00013",
+            "registryIDs": [],
+            "title": "The neuroradiographic diagnosis of lumbar herniated nucleus pulposus: II. A comparison of computed tomography (CT), myelography, CT-myelography, and magnetic resonance imaging"
+          }
+        }
+      ]
+    },
+    {
+      "id": "schaub-1989",
+      "name": "Schaub 1989",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "2799335",
+            "doi": null,
+            "registryIDs": [],
+            "title": "The value of myelography, computerized tomography and course of pain for the diagnosis of recurrent herniated disk"
+          }
+        }
+      ]
+    },
+    {
+      "id": "schipper-1987",
+      "name": "Schipper 1987",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "3628775",
+            "doi": "10.1148/radiology.165.1.3628775",
+            "registryIDs": [],
+            "title": "Lumbar disk herniation: diagnosis with CT or myelography"
+          }
+        }
+      ]
+    },
+    {
+      "id": "thornbury-1993",
+      "name": "Thornbury 1993",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "8267688",
+            "doi": "10.1148/radiology.186.3.8267688",
+            "registryIDs": [],
+            "title": "Disk-caused nerve compression in patients with acute low-back pain: diagnosis with MR, CT myelography, and plain CT"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": "21915747",
+      "doi": "10.1007/s00586-011-2012-2",
+      "registryIDs": [],
+      "title": "Computed tomography for the diagnosis of lumbar spinal pathology in adult patients with low back pain or sciatica: a diagnostic systematic review"
+    }
+  ],
+  "openAlexQueries": [
+    "lumbar disc herniation computed tomography diagnostic accuracy surgery",
+    "low back pain sciatica CT myelography diagnosis lumbar herniated nucleus pulposus"
+  ],
+  "pubMedQueries": [
+    "(\"Intervertebral Disc Displacement\"[MeSH Terms] OR \"lumbar disc herniation\"[Title/Abstract] OR \"herniated nucleus pulposus\"[Title/Abstract]) AND (\"Tomography, X-Ray Computed\"[MeSH Terms] OR \"computed tomography\"[Title/Abstract] OR CT[Title/Abstract]) AND (diagnos*[Title/Abstract] OR sensitivity[Title/Abstract] OR specificity[Title/Abstract])",
+    "(\"low back pain\"[Title/Abstract] OR sciatica[Title/Abstract] OR radicular[Title/Abstract]) AND (lumbar[Title/Abstract]) AND (CT[Title/Abstract] OR myelography[Title/Abstract]) AND (surgery[Title/Abstract] OR surgical[Title/Abstract] OR diagnostic[Title/Abstract])",
+    "lumbar[Title/Abstract] AND (disc[Title/Abstract] OR disk[Title/Abstract]) AND (herniation[Title/Abstract] OR herniated[Title/Abstract]) AND (CT[Title/Abstract] OR \"computed tomography\"[Title/Abstract])"
+  ],
+  "clinicalTrialsQueries": [
+    "lumbar disc herniation computed tomography diagnosis"
+  ]
+}

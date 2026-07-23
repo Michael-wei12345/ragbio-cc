@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "id": "her2-trastuzumab-duration-2020",
+  "review": {
+    "citation": "Gulia S, et al. Evaluation of 1-Year vs Shorter Durations of Adjuvant Trastuzumab Among Patients With Early Breast Cancer. JAMA Network Open. 2020.",
+    "sourceURL": "https://pmc.ncbi.nlm.nih.gov/articles/PMC7445596/",
+    "searchCutoff": "2019-06-30",
+    "identity": {
+      "pmid": "32833018",
+      "doi": "10.1001/jamanetworkopen.2020.11777",
+      "registryIDs": [],
+      "title": "Evaluation of 1-Year vs Shorter Durations of Adjuvant Trastuzumab Among Patients With Early Breast Cancer"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "What duration of adjuvant trastuzumab is effective and safe for patients with HER2-positive early breast cancer?",
+    "structuredInput": "In patients with HER2-positive early breast cancer receiving adjuvant systemic therapy, compare shorter trastuzumab durations with one year of trastuzumab for disease-free survival, overall survival, and cardiac toxicity; prioritize randomized controlled trials.",
+    "eligibilityCriteria": [
+      "HER2-positive early breast cancer",
+      "Adjuvant trastuzumab shorter than one year versus one year",
+      "Randomized controlled trial",
+      "Reports efficacy or cardiac safety outcomes"
+    ],
+    "profile": {
+      "question_type": "intervention",
+      "population": ["early HER2-positive breast cancer"],
+      "intervention_or_exposure": ["adjuvant trastuzumab"],
+      "comparator": ["shorter duration versus one year"],
+      "outcomes": ["disease-free survival", "overall survival", "cardiac toxicity"],
+      "context": ["adjuvant"],
+      "preferred_study_designs": ["randomized controlled trial"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "e2198",
+      "name": "E2198",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "26625004",
+            "doi": "10.1038/bjc.2015.405",
+            "registryIDs": [],
+            "title": "Pilot trial of paclitaxel-trastuzumab adjuvant therapy for early stage breast cancer: a trial of the ECOG-ACRIN cancer research group (E2198)"
+          }
+        }
+      ]
+    },
+    {
+      "id": "short-her",
+      "name": "Short-HER",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "30219886",
+            "doi": "10.1093/annonc/mdy414",
+            "registryIDs": [],
+            "title": "Nine weeks versus 1 year adjuvant trastuzumab in combination with chemotherapy: final results of the phase III randomized Short-HER study"
+          }
+        }
+      ]
+    },
+    {
+      "id": "sold",
+      "name": "SOLD",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "29852043",
+            "doi": "10.1001/jamaoncol.2018.1380",
+            "registryIDs": [],
+            "title": "Effect of adjuvant trastuzumab for a duration of 9 weeks vs 1 year with concomitant chemotherapy for early HER2-positive breast cancer: the SOLD randomized clinical trial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "horg",
+      "name": "HORG",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "25935793",
+            "doi": "10.1093/annonc/mdv213",
+            "registryIDs": [],
+            "title": "Six versus 12 months of adjuvant trastuzumab in combination with dose-dense chemotherapy for women with HER2-positive breast cancer: a multicenter randomized study by the Hellenic Oncology Research Group"
+          }
+        }
+      ]
+    },
+    {
+      "id": "phare",
+      "name": "PHARE",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "23764181",
+            "doi": "10.1016/S1470-2045(13)70225-0",
+            "registryIDs": [],
+            "title": "6 months versus 12 months of adjuvant trastuzumab for patients with HER2-positive early breast cancer (PHARE): a randomised phase 3 trial"
+          }
+        },
+        {
+          "role": "follow_up",
+          "identity": {
+            "pmid": "31178155",
+            "doi": "10.1016/S0140-6736(19)30653-1",
+            "registryIDs": [],
+            "title": "6 months versus 12 months of adjuvant trastuzumab in early breast cancer (PHARE): final analysis of a multicentre, open-label, phase 3 randomised trial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "persephone",
+      "name": "PERSEPHONE",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "31178152",
+            "doi": "10.1016/S0140-6736(19)30650-6",
+            "registryIDs": [],
+            "title": "6 versus 12 months of adjuvant trastuzumab for HER2-positive early breast cancer (PERSEPHONE): 4-year disease-free survival results of a randomised phase 3 non-inferiority trial"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": "32833018",
+      "doi": "10.1001/jamanetworkopen.2020.11777",
+      "registryIDs": [],
+      "title": "Evaluation of 1-Year vs Shorter Durations of Adjuvant Trastuzumab Among Patients With Early Breast Cancer"
+    }
+  ],
+  "openAlexQueries": [
+    "early HER2 positive breast cancer adjuvant trastuzumab shorter duration randomized trial",
+    "trastuzumab 9 weeks 6 months 12 months early breast cancer trial"
+  ],
+  "pubMedQueries": [
+    "(\"Breast Neoplasms\"[MeSH Terms] OR \"breast cancer\"[Title/Abstract]) AND (HER2[Title/Abstract] OR ERBB2[Title/Abstract]) AND trastuzumab[Title/Abstract] AND (adjuvant[Title/Abstract] OR early[Title/Abstract])",
+    "\"breast cancer\"[Title/Abstract] AND (HER2[Title/Abstract] OR ERBB2[Title/Abstract]) AND trastuzumab[Title/Abstract] AND (duration[Title/Abstract] OR shorter[Title/Abstract] OR weeks[Title/Abstract] OR months[Title/Abstract])",
+    "\"breast cancer\"[Title/Abstract] AND trastuzumab[Title/Abstract] AND randomized controlled trial[Publication Type]"
+  ],
+  "clinicalTrialsQueries": [
+    "HER2 positive early breast cancer adjuvant trastuzumab duration",
+    "trastuzumab 6 months 12 months breast cancer"
+  ]
+}

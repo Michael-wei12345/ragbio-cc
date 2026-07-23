@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "id": "pfo-closure-cryptogenic-stroke-2018",
+  "review": {
+    "citation": "Turc G, et al. Closure, Anticoagulation, or Antiplatelet Therapy for Cryptogenic Stroke With Patent Foramen Ovale. Journal of the American Heart Association. 2018.",
+    "sourceURL": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6220551/",
+    "searchCutoff": "2018-03-31",
+    "identity": {
+      "pmid": "29910193",
+      "doi": "10.1161/JAHA.117.008356",
+      "registryIDs": [],
+      "title": "Closure, Anticoagulation, or Antiplatelet Therapy for Cryptogenic Stroke With Patent Foramen Ovale"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "Does closing a patent foramen ovale prevent recurrent stroke better than medical antithrombotic therapy after cryptogenic stroke?",
+    "structuredInput": "In patients with cryptogenic ischemic stroke or transient ischemic attack and patent foramen ovale, compare transcatheter PFO closure with antiplatelet or anticoagulant therapy for recurrent stroke and treatment harms; include randomized controlled trials.",
+    "eligibilityCriteria": [
+      "Cryptogenic stroke or transient ischemic attack with patent foramen ovale",
+      "PFO closure compared with antiplatelet or anticoagulant therapy",
+      "Randomized controlled trial",
+      "Reports recurrent stroke or treatment harms"
+    ],
+    "profile": {
+      "question_type": "intervention",
+      "population": ["cryptogenic stroke with patent foramen ovale"],
+      "intervention_or_exposure": ["transcatheter patent foramen ovale closure"],
+      "comparator": ["antiplatelet therapy", "anticoagulation", "medical therapy"],
+      "outcomes": ["recurrent stroke", "atrial fibrillation", "major bleeding"],
+      "context": ["secondary stroke prevention"],
+      "preferred_study_designs": ["randomized controlled trial"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "closure-i",
+      "name": "CLOSURE I",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "22417252",
+            "doi": "10.1056/NEJMoa1009639",
+            "registryIDs": [],
+            "title": "Closure or medical therapy for cryptogenic stroke with patent foramen ovale"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pc-trial",
+      "name": "PC Trial",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "23514285",
+            "doi": "10.1056/NEJMoa1211716",
+            "registryIDs": [],
+            "title": "Percutaneous closure of patent foramen ovale in cryptogenic embolism"
+          }
+        }
+      ]
+    },
+    {
+      "id": "respect",
+      "name": "RESPECT",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "23514286",
+            "doi": "10.1056/NEJMoa1301440",
+            "registryIDs": [],
+            "title": "Closure of patent foramen ovale versus medical therapy after cryptogenic stroke"
+          }
+        },
+        {
+          "role": "follow_up",
+          "identity": {
+            "pmid": "28902590",
+            "doi": "10.1056/NEJMoa1610057",
+            "registryIDs": [],
+            "title": "Long-term outcomes of patent foramen ovale closure or medical therapy after stroke"
+          }
+        }
+      ]
+    },
+    {
+      "id": "gore-reduce",
+      "name": "Gore REDUCE",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "28902580",
+            "doi": "10.1056/NEJMoa1707404",
+            "registryIDs": [],
+            "title": "Patent foramen ovale closure or antiplatelet therapy for cryptogenic stroke"
+          }
+        }
+      ]
+    },
+    {
+      "id": "close",
+      "name": "CLOSE",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "28902593",
+            "doi": "10.1056/NEJMoa1705915",
+            "registryIDs": [],
+            "title": "Patent foramen ovale closure or anticoagulation versus antiplatelets after stroke"
+          }
+        }
+      ]
+    },
+    {
+      "id": "defense-pfo",
+      "name": "DEFENSE-PFO",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "29544871",
+            "doi": "10.1016/j.jacc.2018.02.046",
+            "registryIDs": [],
+            "title": "Cryptogenic stroke and high-risk patent foramen ovale: the DEFENSE-PFO trial"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": "29910193",
+      "doi": "10.1161/JAHA.117.008356",
+      "registryIDs": [],
+      "title": "Closure, Anticoagulation, or Antiplatelet Therapy for Cryptogenic Stroke With Patent Foramen Ovale"
+    }
+  ],
+  "openAlexQueries": [
+    "patent foramen ovale closure cryptogenic stroke randomized trial medical therapy",
+    "PFO closure antiplatelet anticoagulation recurrent stroke trial"
+  ],
+  "pubMedQueries": [
+    "(\"Foramen Ovale, Patent\"[MeSH Terms] OR \"patent foramen ovale\"[Title/Abstract] OR PFO[Title/Abstract]) AND (cryptogenic stroke[Title/Abstract] OR recurrent stroke[Title/Abstract]) AND (closure[Title/Abstract] OR occluder[Title/Abstract])",
+    "(\"patent foramen ovale\"[Title/Abstract] OR PFO[Title/Abstract]) AND (antiplatelet[Title/Abstract] OR anticoagulation[Title/Abstract] OR medical therapy[Title/Abstract]) AND randomized controlled trial[Publication Type]"
+  ],
+  "clinicalTrialsQueries": [
+    "patent foramen ovale closure cryptogenic stroke",
+    "PFO closure recurrent stroke"
+  ]
+}

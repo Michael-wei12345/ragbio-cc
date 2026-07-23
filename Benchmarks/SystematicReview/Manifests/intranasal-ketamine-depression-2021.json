@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "id": "intranasal-ketamine-depression-2021",
+  "review": {
+    "citation": "An D, et al. Intranasal Ketamine for Depression in Adults: A Systematic Review and Meta-Analysis. Frontiers in Psychology. 2021.",
+    "sourceURL": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8204747/",
+    "searchCutoff": "2020-04-01",
+    "identity": {
+      "pmid": "34140915",
+      "doi": "10.3389/fpsyg.2021.648691",
+      "registryIDs": [],
+      "title": "Intranasal Ketamine for Depression in Adults: A Systematic Review and Meta-Analysis of Randomized, Double-Blind, Placebo-Controlled Trials"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "Does intranasal ketamine or esketamine improve depression in adults, and what adverse effects does it cause?",
+    "structuredInput": "In adults with major depressive disorder, especially treatment-resistant depression, compare intranasal ketamine or esketamine with placebo or active control for response, remission, depressive symptoms, tolerability, and adverse events; include randomized double-blind controlled trials.",
+    "eligibilityCriteria": [
+      "Adults with major depressive disorder or treatment-resistant depression",
+      "Intranasal ketamine or intranasal esketamine",
+      "Placebo or active control",
+      "Randomized double-blind controlled trial",
+      "Clinician-rated depression outcome"
+    ],
+    "profile": {
+      "question_type": "intervention",
+      "population": ["adults with major depressive disorder", "treatment-resistant depression"],
+      "intervention_or_exposure": ["intranasal ketamine", "intranasal esketamine"],
+      "comparator": ["placebo", "active control"],
+      "outcomes": ["response", "remission", "depressive symptoms", "adverse events"],
+      "context": ["adult depression treatment"],
+      "preferred_study_designs": ["randomized double-blind controlled trial"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "lapidus-2014",
+      "name": "Lapidus 2014",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "24821196",
+            "doi": "10.1016/j.biopsych.2014.03.026",
+            "registryIDs": [],
+            "title": "A randomized controlled trial of intranasal ketamine in major depressive disorder"
+          }
+        }
+      ]
+    },
+    {
+      "id": "canuso-2018",
+      "name": "Canuso 2018",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "29656663",
+            "doi": "10.1176/appi.ajp.2018.17060720",
+            "registryIDs": [],
+            "title": "Efficacy and Safety of Intranasal Esketamine for the Rapid Reduction of Symptoms of Depression and Suicidality in Patients at Imminent Risk for Suicide"
+          }
+        }
+      ]
+    },
+    {
+      "id": "daly-2018",
+      "name": "Daly 2018",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "29282469",
+            "doi": "10.1001/jamapsychiatry.2017.3739",
+            "registryIDs": [],
+            "title": "Efficacy and Safety of Intranasal Esketamine Adjunctive to Oral Antidepressant Therapy in Treatment-Resistant Depression: A Randomized Clinical Trial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "transform-1",
+      "name": "TRANSFORM-1",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "31290965",
+            "doi": "10.1093/ijnp/pyz039",
+            "registryIDs": [],
+            "title": "Efficacy and Safety of Fixed-Dose Esketamine Nasal Spray Combined With a New Oral Antidepressant in Treatment-Resistant Depression: TRANSFORM-1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "transform-3",
+      "name": "TRANSFORM-3",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "31734084",
+            "doi": "10.1016/j.jagp.2019.10.008",
+            "registryIDs": [],
+            "title": "Efficacy and Safety of Esketamine Nasal Spray Plus an Oral Antidepressant in Elderly Patients With Treatment-Resistant Depression-TRANSFORM-3"
+          }
+        }
+      ]
+    },
+    {
+      "id": "transform-2",
+      "name": "TRANSFORM-2",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "31109201",
+            "doi": "10.1176/appi.ajp.2019.19020172",
+            "registryIDs": [],
+            "title": "Efficacy and Safety of Flexibly Dosed Esketamine Nasal Spray Combined With a Newly Initiated Oral Antidepressant in Treatment-Resistant Depression"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": "34140915",
+      "doi": "10.3389/fpsyg.2021.648691",
+      "registryIDs": [],
+      "title": "Intranasal Ketamine for Depression in Adults: A Systematic Review and Meta-Analysis of Randomized, Double-Blind, Placebo-Controlled Trials"
+    }
+  ],
+  "openAlexQueries": [
+    "intranasal ketamine esketamine major depression randomized placebo trial",
+    "esketamine nasal spray treatment resistant depression randomized trial"
+  ],
+  "pubMedQueries": [
+    "(\"Depressive Disorder, Major\"[MeSH Terms] OR depression[Title/Abstract] OR \"treatment resistant depression\"[Title/Abstract]) AND (intranasal[Title/Abstract] OR \"nasal spray\"[Title/Abstract]) AND (ketamine[Title/Abstract] OR esketamine[Title/Abstract])",
+    "(ketamine[Title/Abstract] OR esketamine[Title/Abstract]) AND intranasal[Title/Abstract] AND randomized controlled trial[Publication Type]"
+  ],
+  "clinicalTrialsQueries": [
+    "intranasal esketamine treatment resistant depression",
+    "intranasal ketamine major depressive disorder"
+  ]
+}

@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "id": "crp-stemi-prognosis-2017",
+  "review": {
+    "citation": "Mincu RI, et al. Preprocedural C-Reactive Protein Predicts Outcomes after Primary Percutaneous Coronary Intervention in Patients with ST-elevation Myocardial Infarction: a systematic meta-analysis. Scientific Reports. 2017.",
+    "sourceURL": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5270244/",
+    "searchCutoff": "2016-08-08",
+    "identity": {
+      "pmid": "28128312",
+      "doi": "10.1038/srep41530",
+      "registryIDs": [],
+      "title": "Preprocedural C-Reactive Protein Predicts Outcomes after Primary Percutaneous Coronary Intervention in Patients with ST-elevation Myocardial Infarction a systematic meta-analysis"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "Does preprocedural C-reactive protein predict clinical outcomes after primary PCI for ST-elevation myocardial infarction?",
+    "structuredInput": "In patients with acute ST-elevation myocardial infarction undergoing primary percutaneous coronary intervention, assess whether higher preprocedural C-reactive protein predicts mortality, major adverse cardiovascular events, reinfarction, stent thrombosis, or repeat revascularization; prioritize longitudinal prognostic studies.",
+    "eligibilityCriteria": [
+      "Patients with ST-elevation myocardial infarction undergoing primary PCI",
+      "C-reactive protein measured before the procedure",
+      "Reports mortality or cardiovascular outcomes after PCI",
+      "Longitudinal prognostic cohort or trial analysis"
+    ],
+    "profile": {
+      "question_type": "prognosis",
+      "population": ["ST-elevation myocardial infarction", "primary percutaneous coronary intervention"],
+      "intervention_or_exposure": ["preprocedural C-reactive protein", "high-sensitivity C-reactive protein"],
+      "comparator": ["higher versus lower C-reactive protein"],
+      "outcomes": ["mortality", "major adverse cardiovascular events", "reinfarction", "stent thrombosis", "target vessel revascularization"],
+      "context": ["before primary PCI"],
+      "preferred_study_designs": ["prognostic cohort study", "longitudinal study"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "ortolani-2008",
+      "name": "Ortolani 2008",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "17766280",
+            "doi": "10.1093/eurheartj/ehm338",
+            "registryIDs": [],
+            "title": "Predictive value of high sensitivity C-reactive protein in patients with ST-elevation myocardial infarction treated with percutaneous coronary intervention"
+          }
+        }
+      ]
+    },
+    {
+      "id": "schoos-2011",
+      "name": "Schoos 2011",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "21439539",
+            "doi": "10.1016/j.amjcard.2011.01.042",
+            "registryIDs": [],
+            "title": "Usefulness of preprocedure high-sensitivity C-reactive protein to predict death, recurrent myocardial infarction, and stent thrombosis according to stent type in patients with ST-segment elevation myocardial infarction randomized to bare metal or drug-eluting stenting during primary percutaneous coronary intervention"
+          }
+        }
+      ]
+    },
+    {
+      "id": "tomoda-2000",
+      "name": "Tomoda 2000",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "10925350",
+            "doi": "10.1067/mhj.2000.108244",
+            "registryIDs": [],
+            "title": "Prognostic value of C-reactive protein levels within six hours after the onset of acute myocardial infarction"
+          }
+        }
+      ]
+    },
+    {
+      "id": "damman-2011",
+      "name": "Damman 2011",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "21185497",
+            "doi": "10.1016/j.jacc.2010.06.053",
+            "registryIDs": [],
+            "title": "Multiple biomarkers at admission significantly improve the prediction of mortality in patients undergoing primary percutaneous coronary intervention for acute ST-segment elevation myocardial infarction"
+          }
+        }
+      ]
+    },
+    {
+      "id": "jeong-2008",
+      "name": "Jeong 2008",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "19072878",
+            "doi": "10.1002/clc.20403",
+            "registryIDs": [],
+            "title": "Biomarkers on admission for the prediction of cardiovascular events after primary stenting in patients with ST-elevation myocardial infarction"
+          }
+        }
+      ]
+    },
+    {
+      "id": "kim-2013",
+      "name": "Kim 2013",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "24255650",
+            "doi": "10.4070/kcj.2013.43.10.664",
+            "registryIDs": [],
+            "title": "The Impact of Ischemic Time on the Predictive Value of High-Sensitivity C-Reactive Protein in ST-Segment Elevation Myocardial Infarction Patients Treated by Primary Percutaneous Coronary Intervention"
+          }
+        }
+      ]
+    },
+    {
+      "id": "magadle-2004",
+      "name": "Magadle 2004",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "15049386",
+            "doi": "10.1002/clc.4960270314",
+            "registryIDs": [],
+            "title": "The relation between preprocedural C-reactive protein levels and early and late complications in patients with acute myocardial infarction undergoing interventional coronary angioplasty"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": "28128312",
+      "doi": "10.1038/srep41530",
+      "registryIDs": [],
+      "title": "Preprocedural C-Reactive Protein Predicts Outcomes after Primary Percutaneous Coronary Intervention in Patients with ST-elevation Myocardial Infarction a systematic meta-analysis"
+    }
+  ],
+  "openAlexQueries": [
+    "preprocedural C-reactive protein STEMI primary PCI prognosis mortality",
+    "high sensitivity CRP ST elevation myocardial infarction percutaneous coronary intervention outcomes"
+  ],
+  "pubMedQueries": [
+    "(\"ST Elevation Myocardial Infarction\"[MeSH Terms] OR STEMI[Title/Abstract] OR \"ST-elevation myocardial infarction\"[Title/Abstract]) AND (\"C-Reactive Protein\"[MeSH Terms] OR \"C-reactive protein\"[Title/Abstract] OR hs-CRP[Title/Abstract]) AND (\"Percutaneous Coronary Intervention\"[MeSH Terms] OR PCI[Title/Abstract])",
+    "(\"acute myocardial infarction\"[Title/Abstract]) AND (\"C-reactive protein\"[Title/Abstract]) AND (prognos*[Title/Abstract] OR predict*[Title/Abstract] OR mortality[Title/Abstract] OR cardiovascular[Title/Abstract]) AND (angioplasty[Title/Abstract] OR stent*[Title/Abstract] OR intervention[Title/Abstract])"
+  ],
+  "clinicalTrialsQueries": [
+    "STEMI primary PCI C-reactive protein outcomes"
+  ]
+}

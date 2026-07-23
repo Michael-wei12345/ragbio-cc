@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "id": "ankle-syndesmosis-imaging-diagnosis-2019",
+  "review": {
+    "citation": "Chun DI, et al. Diagnostic Accuracy of Radiologic Methods for Ankle Syndesmosis Injury: A Systematic Review and Meta-Analysis. Journal of Clinical Medicine. 2019.",
+    "sourceURL": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6678834/",
+    "searchCutoff": "2017-03-31",
+    "identity": {
+      "pmid": "31277316",
+      "doi": "10.3390/jcm8070968",
+      "registryIDs": [],
+      "title": "Diagnostic Accuracy of Radiologic Methods for Ankle Syndesmosis Injury: A Systematic Review and Meta-Analysis"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "How accurately do radiologic imaging methods diagnose ankle syndesmosis injury?",
+    "structuredInput": "In adults with suspected acute or chronic ankle syndesmosis injury, evaluate plain radiography, computed tomography, magnetic resonance imaging, or ultrasonography against arthroscopy, intraoperative findings, or an acceptable imaging reference standard; prioritize diagnostic accuracy studies.",
+    "eligibilityCriteria": [
+      "Adults with suspected ankle syndesmosis injury",
+      "X-ray, CT, MRI, or ultrasonography used as an index test",
+      "Arthroscopy, intraoperative findings, or an acceptable reference standard",
+      "Reports diagnostic accuracy data"
+    ],
+    "profile": {
+      "question_type": "diagnosis",
+      "population": ["adults with ankle syndesmosis injury"],
+      "intervention_or_exposure": ["radiography", "computed tomography", "magnetic resonance imaging", "ultrasonography"],
+      "comparator": ["arthroscopy", "intraoperative findings", "reference imaging"],
+      "outcomes": ["diagnostic sensitivity", "diagnostic specificity", "syndesmosis injury"],
+      "context": ["diagnostic accuracy", "ankle trauma"],
+      "preferred_study_designs": ["diagnostic accuracy study"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "takao-2003",
+      "name": "Takao 2003",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "12729102",
+            "doi": "10.1302/0301-620X.85B3.13174",
+            "registryIDs": [],
+            "title": "Diagnosis of a tear of the tibiofibular syndesmosis. The role of arthroscopy of the ankle"
+          }
+        }
+      ]
+    },
+    {
+      "id": "oae-2003",
+      "name": "Oae 2003",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "12616009",
+            "doi": "10.1148/radiol.2271011865",
+            "registryIDs": [],
+            "title": "Injury of the tibiofibular syndesmosis: Value of MR imaging for diagnosis"
+          }
+        }
+      ]
+    },
+    {
+      "id": "christodoulou-1995",
+      "name": "Christodoulou 1995",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "7776043",
+            "doi": "10.1097/00005131-199504000-00002",
+            "registryIDs": [],
+            "title": "The use of sonography for evaluation of the integrity and healing process of the tibiofibular interosseous membrane in ankle fractures"
+          }
+        }
+      ]
+    },
+    {
+      "id": "kim-2007",
+      "name": "Kim 2007",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "17185669",
+            "doi": "10.1148/radiol.2421051369",
+            "registryIDs": [],
+            "title": "Chronic tibiofibular syndesmosis injury of ankle: Evaluation with contrast-enhanced fat-suppressed 3D fast spoiled gradient-recalled acquisition in the steady state MR imaging"
+          }
+        }
+      ]
+    },
+    {
+      "id": "schoennagel-2014",
+      "name": "Schoennagel 2014",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "25043987",
+            "doi": "10.1016/j.ejrad.2014.06.034",
+            "registryIDs": [],
+            "title": "Isolated syndesmotic injury in acute ankle trauma: Comparison of plain film radiography with 3T MRI"
+          }
+        }
+      ]
+    },
+    {
+      "id": "yeung-2015",
+      "name": "Yeung 2015",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "25672945",
+            "doi": "10.1007/s00256-015-2107-7",
+            "registryIDs": [],
+            "title": "Can pre-operative axial CT imaging predict syndesmosis instability in patients sustaining ankle fractures? Seven years’ experience in a tertiary trauma center"
+          }
+        }
+      ]
+    },
+    {
+      "id": "clanton-2016",
+      "name": "Clanton 2016",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "25398368",
+            "doi": "10.1007/s00167-014-3399-1",
+            "registryIDs": [],
+            "title": "Magnetic resonance imaging characterization of individual ankle syndesmosis structures in asymptomatic and surgically treated cohorts"
+          }
+        }
+      ]
+    },
+    {
+      "id": "ahn-2017",
+      "name": "Ahn 2017",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "28237080",
+            "doi": "10.1016/j.arthro.2017.01.009",
+            "registryIDs": [],
+            "title": "Isolated Syndesmosis Diastasis: Computed Tomography Scan Assessment With Arthroscopic Correlation"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": "31277316",
+      "doi": "10.3390/jcm8070968",
+      "registryIDs": [],
+      "title": "Diagnostic Accuracy of Radiologic Methods for Ankle Syndesmosis Injury: A Systematic Review and Meta-Analysis"
+    }
+  ],
+  "openAlexQueries": [
+    "ankle syndesmosis injury imaging diagnostic accuracy arthroscopy",
+    "tibiofibular syndesmosis radiography CT MRI ultrasound diagnosis"
+  ],
+  "pubMedQueries": [
+    "(syndesmosis[Title/Abstract] OR syndesmotic[Title/Abstract] OR tibiofibular[Title/Abstract]) AND ankle[Title/Abstract] AND (radiograph*[Title/Abstract] OR x-ray[Title/Abstract] OR CT[Title/Abstract] OR MRI[Title/Abstract] OR ultrasonograph*[Title/Abstract]) AND (diagnos*[Title/Abstract] OR accuracy[Title/Abstract])",
+    "(\"Ankle Injuries\"[MeSH Terms] OR \"ankle fracture\"[Title/Abstract]) AND (syndesmosis[Title/Abstract] OR tibiofibular[Title/Abstract]) AND (arthroscopy[Title/Abstract] OR intraoperative[Title/Abstract] OR sensitivity[Title/Abstract] OR specificity[Title/Abstract])",
+    "(syndesmosis[Title/Abstract] OR syndesmotic[Title/Abstract] OR tibiofibular[Title/Abstract]) AND (radiograph*[Title/Abstract] OR CT[Title/Abstract] OR MRI[Title/Abstract] OR \"MR imaging\"[Title/Abstract] OR ultrasound[Title/Abstract])"
+  ],
+  "clinicalTrialsQueries": [
+    "ankle syndesmosis imaging diagnosis"
+  ]
+}

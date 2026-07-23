@@ -87,6 +87,7 @@ func makeSnapshot(query: String, works: [Work]) -> SearchHistorySnapshot {
         aiReasons: [:],
         aiScores: [:],
         aiEvidenceLevels: [:],
+        globalScoreFingerprint: nil,
         aiSearchNotice: nil,
         pubMedNotice: nil,
         searchTimingSummary: nil,

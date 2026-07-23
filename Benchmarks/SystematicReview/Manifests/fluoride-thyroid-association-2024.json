@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "id": "fluoride-thyroid-association-2024",
+  "review": {
+    "citation": "Ferreira MKM, et al. Is there any association between fluoride exposure and thyroid function modulation? A systematic review. PLOS ONE. 2024.",
+    "sourceURL": "https://pmc.ncbi.nlm.nih.gov/articles/PMC11003687/",
+    "searchCutoff": "2023-01-31",
+    "identity": {
+      "pmid": "38593166",
+      "doi": "10.1371/journal.pone.0301911",
+      "registryIDs": [],
+      "title": "Is there any association between fluoride exposure and thyroid function modulation? A systematic review"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "Is fluoride exposure associated with changes in thyroid function in humans?",
+    "structuredInput": "In human populations exposed to fluoride, particularly through drinking water, assess the association between higher fluoride exposure and thyroid hormone concentrations, thyroid-stimulating hormone, thyroid volume, or thyroid dysfunction compared with lower exposure; prioritize observational exposure studies.",
+    "eligibilityCriteria": [
+      "Human participants with measured or defined fluoride exposure",
+      "Compares higher and lower fluoride exposure or reports an exposure-response analysis",
+      "Measures thyroid hormones, TSH, thyroid volume, or thyroid dysfunction",
+      "Observational exposure study"
+    ],
+    "profile": {
+      "question_type": "etiology",
+      "population": ["humans", "children or adults exposed to fluoride"],
+      "intervention_or_exposure": ["fluoride exposure", "fluoride in drinking water"],
+      "comparator": ["higher versus lower fluoride exposure"],
+      "outcomes": ["thyroid hormones", "thyroid-stimulating hormone", "thyroid volume", "thyroid dysfunction"],
+      "context": ["environmental exposure"],
+      "preferred_study_designs": ["observational exposure study", "cohort study", "cross-sectional study"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "kutlucan-2013",
+      "name": "Kutlucan 2013",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "23348169",
+            "doi": null,
+            "registryIDs": [],
+            "title": "The investigation of effects of fluorosis on thyroid volume in school-age children"
+          }
+        }
+      ]
+    },
+    {
+      "id": "leone-1964",
+      "name": "Leone 1964",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "14176247",
+            "doi": "10.14219/jada.archive.1964.0261",
+            "registryIDs": [],
+            "title": "Effect of fluoride on thyroid gland: Clinical study"
+          }
+        }
+      ]
+    },
+    {
+      "id": "baum-1981",
+      "name": "Baum 1981",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "7297984",
+            "doi": null,
+            "registryIDs": [],
+            "title": "Bone density and thyroid gland function in adolescents in relation to fluoride content of drinking water"
+          }
+        }
+      ]
+    },
+    {
+      "id": "wang-2001",
+      "name": "Wang 2001",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": null,
+            "doi": null,
+            "registryIDs": [],
+            "title": "Effects of high iodine and high fluorine on children’s intelligence and thyroid function"
+          }
+        }
+      ]
+    },
+    {
+      "id": "khandare-2018",
+      "name": "Khandare 2018",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "29396763",
+            "doi": "10.1007/s10661-018-6501-1",
+            "registryIDs": [],
+            "title": "Dose-dependent effect of fluoride on clinical and subclinical indices of fluorosis in school going children and its mitigation by supply of safe drinking water for 5 years: an Indian study"
+          }
+        }
+      ]
+    },
+    {
+      "id": "zulfiqar-2019",
+      "name": "Zulfiqar 2019",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": null,
+            "doi": "10.1515/chem-2019-0055",
+            "registryIDs": [],
+            "title": "Correlation of water fluoride with body fluids, dental fluorosis and FT4, FT3–TSH disruption among children in an endemic fluorosis area in Pakistan"
+          }
+        }
+      ]
+    },
+    {
+      "id": "zulfiqar-2020",
+      "name": "Zulfiqar 2020",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": null,
+            "doi": "10.1515/chem-2020-0012",
+            "registryIDs": [],
+            "title": "Effect of excess fluoride consumption on urine-serum fluorides, dental state and thyroid hormones among children in Talab Sarai Punjab Pakistan"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": "38593166",
+      "doi": "10.1371/journal.pone.0301911",
+      "registryIDs": [],
+      "title": "Is there any association between fluoride exposure and thyroid function modulation? A systematic review"
+    }
+  ],
+  "openAlexQueries": [
+    "fluoride exposure thyroid function hormones humans drinking water",
+    "fluorosis thyroid volume TSH FT3 FT4 children",
+    "fluoride thyroid"
+  ],
+  "pubMedQueries": [
+    "(\"Fluorides\"[MeSH Terms] OR fluoride[Title/Abstract] OR fluorosis[Title/Abstract]) AND (\"Thyroid Gland\"[MeSH Terms] OR thyroid[Title/Abstract] OR TSH[Title/Abstract] OR FT3[Title/Abstract] OR FT4[Title/Abstract]) AND (human*[Title/Abstract] OR child*[Title/Abstract] OR adolescent*[Title/Abstract] OR adult*[Title/Abstract])",
+    "(\"drinking water\"[Title/Abstract] OR environmental[Title/Abstract]) AND (fluoride[Title/Abstract] OR fluorosis[Title/Abstract]) AND (thyroid[Title/Abstract] OR hormone*[Title/Abstract])",
+    "(fluoride[Title/Abstract] OR fluorosis[Title/Abstract]) AND (thyroid[Title/Abstract] OR TSH[Title/Abstract] OR hormone*[Title/Abstract])"
+  ],
+  "clinicalTrialsQueries": [
+    "fluoride exposure thyroid function"
+  ]
+}

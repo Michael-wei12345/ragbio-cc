@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "id": "noac-after-tavr-2024",
+  "review": {
+    "citation": "Said K, et al. Non-vitamin K antagonist oral anticoagulants after transcatheter aortic valve replacement: a network meta-analysis. Cochrane Database of Systematic Reviews. 2024.",
+    "sourceURL": "https://www.cochrane.org/evidence/CD013745_what-are-benefits-and-harms-non-vitamin-k-antagonist-oral-anticoagulants-noacs-next-generation-blood",
+    "searchCutoff": "2023-10-07",
+    "identity": {
+      "pmid": null,
+      "doi": "10.1002/14651858.CD013745.pub2",
+      "registryIDs": [],
+      "title": "Non-vitamin K antagonist oral anticoagulants after transcatheter aortic valve replacement"
+    }
+  },
+  "question": {
+    "naturalLanguageInput": "What are the benefits and harms of non-vitamin K oral anticoagulants after transcatheter aortic valve replacement?",
+    "structuredInput": "In adults after successful TAVR, with or without another indication for anticoagulation, compare a non-vitamin K oral anticoagulant with antiplatelet therapy or a vitamin K antagonist for mortality, stroke, thromboembolism, and major bleeding; include randomized controlled trials.",
+    "eligibilityCriteria": [
+      "Adults after transcatheter aortic valve replacement",
+      "Rivaroxaban, apixaban, or edoxaban",
+      "Antiplatelet therapy or vitamin K antagonist comparator",
+      "Randomized controlled trial",
+      "Reports mortality, stroke, thromboembolism, or major bleeding"
+    ],
+    "profile": {
+      "question_type": "intervention",
+      "population": ["adults after transcatheter aortic valve replacement"],
+      "intervention_or_exposure": ["rivaroxaban", "apixaban", "edoxaban", "non-vitamin K oral anticoagulant"],
+      "comparator": ["antiplatelet therapy", "vitamin K antagonist"],
+      "outcomes": ["mortality", "stroke", "thromboembolism", "major bleeding"],
+      "context": ["after TAVR"],
+      "preferred_study_designs": ["randomized controlled trial"]
+    }
+  },
+  "goldStudyFamilies": [
+    {
+      "id": "adapt-tavr",
+      "name": "ADAPT-TAVR",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "35373583",
+            "doi": "10.1161/CIRCULATIONAHA.121.058735",
+            "registryIDs": [],
+            "title": "Edoxaban Versus Dual Antiplatelet Therapy for Leaflet Thrombosis and Cerebral Thromboembolism After TAVR: The ADAPT-TAVR Randomized Clinical Trial"
+          }
+        },
+        {
+          "role": "protocol",
+          "identity": {
+            "pmid": "33402409",
+            "doi": "10.1136/bmjopen-2020-042587",
+            "registryIDs": [],
+            "title": "Rationale and design of the ADAPT-TAVR trial"
+          }
+        }
+      ]
+    },
+    {
+      "id": "atlantis",
+      "name": "ATLANTIS",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "35583186",
+            "doi": "10.1093/eurheartj/ehac242",
+            "registryIDs": [],
+            "title": "Apixaban vs. standard of care after transcatheter aortic valve implantation: the ATLANTIS trial"
+          }
+        },
+        {
+          "role": "subgroup",
+          "identity": {
+            "pmid": "36137682",
+            "doi": "10.1016/j.jacc.2022.08.805",
+            "registryIDs": [],
+            "title": "Apixaban and Valve Thrombosis After Transcatheter Aortic Valve Replacement: The ATLANTIS-4D-CT Randomized Clinical Trial Substudy"
+          }
+        }
+      ]
+    },
+    {
+      "id": "envisage-tavi-af",
+      "name": "ENVISAGE-TAVI AF",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "34449183",
+            "doi": "10.1056/NEJMoa2111016",
+            "registryIDs": [],
+            "title": "Edoxaban versus Vitamin K Antagonist for Atrial Fibrillation after TAVR"
+          }
+        }
+      ]
+    },
+    {
+      "id": "galileo",
+      "name": "GALILEO",
+      "critical": true,
+      "reports": [
+        {
+          "role": "primary",
+          "identity": {
+            "pmid": "31733180",
+            "doi": "10.1056/NEJMoa1911425",
+            "registryIDs": [],
+            "title": "A Controlled Trial of Rivaroxaban after Transcatheter Aortic-Valve Replacement"
+          }
+        },
+        {
+          "role": "subgroup",
+          "identity": {
+            "pmid": "31733182",
+            "doi": "10.1056/NEJMoa1911426",
+            "registryIDs": ["NCT02833948"],
+            "title": "Reduced Leaflet Motion after Transcatheter Aortic-Valve Replacement"
+          }
+        }
+      ]
+    }
+  ],
+  "contextualSources": [],
+  "prohibitedCitationSeeds": [
+    {
+      "pmid": null,
+      "doi": "10.1002/14651858.CD013745.pub2",
+      "registryIDs": [],
+      "title": "Non-vitamin K antagonist oral anticoagulants after transcatheter aortic valve replacement"
+    }
+  ],
+  "openAlexQueries": [
+    "TAVR transcatheter aortic valve replacement NOAC randomized trial",
+    "TAVR apixaban rivaroxaban edoxaban antiplatelet vitamin K antagonist trial"
+  ],
+  "pubMedQueries": [
+    "(TAVR[Title/Abstract] OR TAVI[Title/Abstract] OR \"transcatheter aortic valve replacement\"[Title/Abstract]) AND (NOAC[Title/Abstract] OR DOAC[Title/Abstract] OR apixaban[Title/Abstract] OR rivaroxaban[Title/Abstract] OR edoxaban[Title/Abstract])",
+    "(\"transcatheter aortic valve\"[Title/Abstract] OR TAVR[Title/Abstract]) AND (anticoagulant[Title/Abstract] OR antithrombotic[Title/Abstract]) AND randomized controlled trial[Publication Type]"
+  ],
+  "clinicalTrialsQueries": [
+    "TAVR apixaban rivaroxaban edoxaban",
+    "transcatheter aortic valve replacement oral anticoagulation"
+  ]
+}

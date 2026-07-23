@@ -116,11 +116,13 @@ import Testing
         )
 
         object.removeValue(forKey: "decisionFilter")
+        object.removeValue(forKey: "globalScoreFingerprint")
         let missing = try JSONDecoder().decode(
             SearchHistorySnapshot.self,
             from: JSONSerialization.data(withJSONObject: object)
         )
         #expect(missing.decisionFilter == .all)
+        #expect(missing.globalScoreFingerprint == nil)
 
         object["decisionFilter"] = "candidate"
         let candidate = try JSONDecoder().decode(

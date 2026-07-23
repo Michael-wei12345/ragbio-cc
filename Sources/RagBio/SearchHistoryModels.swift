@@ -169,6 +169,7 @@ struct SearchHistorySnapshot: Encodable, Equatable {
     var aiScores: [String: Int]
     var aiEvidenceLevels: [String: String]
     var evidenceCards: [String: StructuredEvidenceCard] = [:]
+    var globalScoreFingerprint: String?
     var aiSearchNotice: String?
     var pubMedNotice: String?
     var searchTimingSummary: String?
@@ -186,6 +187,7 @@ extension SearchHistorySnapshot: Decodable {
         case openAccessOnly, allWorks, rankedWorks, candidateWorks, totalCount, currentPage
         case selectedWorkID
         case lastAIPlan, aiReasons, aiScores, aiEvidenceLevels, evidenceCards
+        case globalScoreFingerprint
         case aiSearchNotice, pubMedNotice
         case searchTimingSummary, fullTextReviewSummaries, articleSummaries
         case currentEvidenceTable, currentFieldScanReport, decisionFilter, completedAIStage
@@ -215,6 +217,10 @@ extension SearchHistorySnapshot: Decodable {
             [String: StructuredEvidenceCard].self,
             forKey: .evidenceCards
         ) ?? [:]
+        globalScoreFingerprint = try values.decodeIfPresent(
+            String.self,
+            forKey: .globalScoreFingerprint
+        )
         aiSearchNotice = try values.decodeIfPresent(String.self, forKey: .aiSearchNotice)
         pubMedNotice = try values.decodeIfPresent(String.self, forKey: .pubMedNotice)
         searchTimingSummary = try values.decodeIfPresent(String.self, forKey: .searchTimingSummary)

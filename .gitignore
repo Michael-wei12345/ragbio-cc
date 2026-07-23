@@ -9,3 +9,4 @@ DerivedData/
 dist/
 .worktrees/
 .superpowers/
+Benchmarks/SystematicReview/Cache/

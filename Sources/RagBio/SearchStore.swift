@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 import OSLog
 import UniformTypeIdentifiers
@@ -86,6 +87,7 @@ final class SearchStore: ObservableObject {
     private let historyStore: SearchHistoryStore
     private var aiRankedWorks: [Work] = []
     private var aiCandidateWorks: [Work] = []
+    private var globalScoreFingerprint: String?
     private var searchGeneration = 0
     private var historyRevision = 0
     private var historyMutationToken = SearchHistoryMutationToken()
@@ -248,6 +250,7 @@ final class SearchStore: ObservableObject {
             aiScores: aiScores,
             aiEvidenceLevels: aiEvidenceLevels,
             evidenceCards: evidenceCards,
+            globalScoreFingerprint: globalScoreFingerprint,
             aiSearchNotice: aiSearchNotice,
             pubMedNotice: pubMedNotice,
             searchTimingSummary: searchTimingSummary,
@@ -284,6 +287,7 @@ final class SearchStore: ObservableObject {
         aiScores = snapshot.aiScores
         aiEvidenceLevels = snapshot.aiEvidenceLevels
         evidenceCards = snapshot.evidenceCards
+        globalScoreFingerprint = snapshot.globalScoreFingerprint
         aiSearchNotice = snapshot.aiSearchNotice?.contains("粗排") == true
             ? nil
             : snapshot.aiSearchNotice
@@ -477,6 +481,7 @@ final class SearchStore: ObservableObject {
         aiScores = [:]
         aiEvidenceLevels = [:]
         evidenceCards = [:]
+        globalScoreFingerprint = nil
         aiSearchNotice = nil
         pubMedNotice = nil
         searchTimingSummary = nil
@@ -1223,6 +1228,7 @@ final class SearchStore: ObservableObject {
             aiVisiblePageFullTextInProgress = []
             aiVisiblePageFullTextFailures = [:]
             evidenceCards = [:]
+            globalScoreFingerprint = nil
             aiCandidateWorks = candidates
             aiRankedWorks = candidates
             lastQuery = plan.searchQuery
@@ -1388,6 +1394,24 @@ final class SearchStore: ObservableObject {
         searchPerformanceLogger.info(
             "Passage retrieval finished candidates=\(candidates.count, privacy: .public) generated_embeddings=\(generatedEmbeddingCount, privacy: .public) per_document_limit=\(maximumNewEmbeddingsPerDocument, privacy: .public) seconds=\(Date().timeIntervalSince(retrievalStartedAt), privacy: .public)"
         )
+        let scoreFingerprint = Self.globalScoringFingerprint(
+            description: originalRequest,
+            profile: plan.questionProfile,
+            inputs: inputs,
+            configuration: configuration
+        )
+        if let cached = historyRefreshFallbackRecord?.snapshot,
+           applyCachedGlobalRanking(
+               cached,
+               candidates: candidates,
+               fingerprint: scoreFingerprint
+           ) {
+            searchPerformanceLogger.info(
+                "Global calibration reused fingerprint cache candidates=\(candidates.count, privacy: .public)"
+            )
+            return (elapsedSeconds(since: startedAt), true)
+        }
+        globalScoreFingerprint = scoreFingerprint
         var cardsByID = evidenceCards
         let missingRanges = Self.evidenceBatchRanges(
             totalCount: inputs.count,
@@ -1578,7 +1602,6 @@ final class SearchStore: ObservableObject {
                 profile: plan.questionProfile,
                 cards: cards,
                 works: candidates,
-                localScores: localScores,
                 configuration: configuration
             )
             let returned = Set(outputs.map(\.index))
@@ -1589,7 +1612,6 @@ final class SearchStore: ObservableObject {
                     profile: plan.questionProfile,
                     cards: missing.map { cards[$0] },
                     works: missing.map { candidates[$0] },
-                    localScores: missing.map { localScores[$0] },
                     configuration: configuration
                 )
                 outputs += retry.compactMap { output in
@@ -1602,9 +1624,8 @@ final class SearchStore: ObservableObject {
                 outputs,
                 candidateCount: candidates.count
             )
-            let scoreByIndex = Self.anchoredGlobalScores(
+            let scoreByIndex = Self.safetyAdjustedGlobalScores(
                 modelScores: modelScores,
-                localScores: localScores,
                 cards: cards
             )
             applyGlobalScores(
@@ -1621,6 +1642,7 @@ final class SearchStore: ObservableObject {
             throw CancellationError()
         } catch {
             try ensureSearchIsActive(generation)
+            globalScoreFingerprint = nil
             applyGlobalScores(
                 candidates: candidates,
                 cards: cards,
@@ -1682,25 +1704,127 @@ final class SearchStore: ObservableObject {
             .map(\.index)
     }
 
-    nonisolated static func anchoredGlobalScores(
+    nonisolated static func safetyAdjustedGlobalScores(
         modelScores: [Int: Int],
-        localScores: [Int],
         cards: [StructuredEvidenceCard]
     ) -> [Int: Int] {
-        guard localScores.count == cards.count else { return modelScores }
         return Dictionary(uniqueKeysWithValues: cards.indices.compactMap { index in
             guard let model = modelScores[index] else { return nil }
-            let blended = Int(
-                (Double(model) * 0.75 + Double(localScores[index]) * 0.25).rounded()
-            )
             let card = cards[index]
-            let score = (card.population == .mismatch
+            let hasCoreMismatch = card.population == .mismatch
                 || card.interventionOrExposure == .mismatch
-                || card.outcome == .mismatch)
-                ? min(4, blended)
-                : min(100, max(0, blended))
+                || card.outcome == .mismatch
+            let isStrongDirectPrimary = card.role == .primary
+                && [.match, .partial].contains(card.population)
+                && [.match, .partial].contains(card.interventionOrExposure)
+                && [.match, .partial].contains(card.outcome)
+                && (card.reportsEffectEstimate
+                    || (card.reportsSampleSize && card.hasComparatorGroup))
+            let score: Int
+            if hasCoreMismatch {
+                score = min(4, model)
+            } else if isStrongDirectPrimary {
+                // Guard against an occasional global-calibration outlier that assigns a
+                // low/background score to a well-supported primary results report.
+                score = max(70, min(100, max(0, model)))
+            } else {
+                score = min(100, max(0, model))
+            }
             return (index, score)
         })
+    }
+
+    nonisolated static func globalScoringFingerprint(
+        description: String,
+        profile: ResearchQuestionProfile?,
+        inputs: [AIEvidenceRankingInput],
+        configuration: AIProviderConfiguration
+    ) -> String {
+        var hasher = SHA256()
+        func update(_ value: String) {
+            let data = Data(value.utf8)
+            hasher.update(data: Data("\(data.count):".utf8))
+            hasher.update(data: data)
+        }
+
+        update("ragbio-global-scoring-v3-ai-primary-with-70-point-evidence-floor")
+        update(description)
+        update(configuration.provider.rawValue)
+        update(configuration.model.trimmingCharacters(in: .whitespacesAndNewlines))
+        update(configuration.baseURL.trimmingCharacters(in: .whitespacesAndNewlines))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let profileData = try? encoder.encode(profile ?? .empty)
+        update(profileData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
+
+        for input in inputs {
+            update(input.work.id)
+            update(input.work.title)
+            update((input.work.publicationTypes ?? []).joined(separator: "\u{1f}"))
+            update(AIQueryPlanner.abstractEvidence(input.abstract, maxCharacters: 2_800))
+            let passages = input.passages.prefix(HybridRetriever.evidencePassageLimit)
+            update(String(passages.count))
+            for hit in passages {
+                update(hit.paragraph.locator)
+                update(AIQueryPlanner.passageEvidence(hit, maxCharacters: 1_000))
+            }
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    nonisolated static func canReuseGlobalRanking(
+        from snapshot: SearchHistorySnapshot,
+        candidates: [Work],
+        fingerprint: String
+    ) -> Bool {
+        guard snapshot.globalScoreFingerprint == fingerprint,
+              snapshot.completedAIStage == .globalEvidenceRanking,
+              snapshot.candidateWorks.map(\.id) == candidates.map(\.id) else {
+            return false
+        }
+        let candidateIDs = Set(candidates.map(\.id))
+        let rankedIDs = snapshot.rankedWorks.map(\.id)
+        return Set(rankedIDs).count == rankedIDs.count
+            && rankedIDs.allSatisfy(candidateIDs.contains)
+            && rankedIDs.allSatisfy { snapshot.aiScores[$0] != nil }
+            && rankedIDs.allSatisfy { snapshot.aiEvidenceLevels[$0] != nil }
+            && candidates.allSatisfy { snapshot.evidenceCards[$0.id] != nil }
+    }
+
+    private func applyCachedGlobalRanking(
+        _ snapshot: SearchHistorySnapshot,
+        candidates: [Work],
+        fingerprint: String
+    ) -> Bool {
+        guard Self.canReuseGlobalRanking(
+            from: snapshot,
+            candidates: candidates,
+            fingerprint: fingerprint
+        ) else {
+            return false
+        }
+        let currentByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
+        let ranked = snapshot.rankedWorks.compactMap { currentByID[$0.id] }
+        guard ranked.count == snapshot.rankedWorks.count else { return false }
+
+        let rankedIDs = Set(ranked.map(\.id))
+        aiRankedWorks = ranked
+        aiScores = snapshot.aiScores.filter { rankedIDs.contains($0.key) }
+        aiReasons = [:]
+        aiEvidenceLevels = snapshot.aiEvidenceLevels.filter { rankedIDs.contains($0.key) }
+        evidenceCards = snapshot.evidenceCards.filter { currentByID[$0.key] != nil }
+        globalScoreFingerprint = fingerprint
+        totalCount = ranked.count
+        aiRerankState = .completed(candidates: candidates.count, retained: ranked.count)
+        let fullText = ranked.filter {
+            aiEvidenceLevels[$0.id]?.hasPrefix("全文") == true
+        }.count
+        aiSecondRerankState = .completed(
+            fullText: fullText,
+            abstractOnly: ranked.count - fullText,
+            retained: ranked.count
+        )
+        return true
     }
 
     nonisolated static func needsCoreMismatchVerification(
@@ -1853,6 +1977,7 @@ final class SearchStore: ObservableObject {
     }
 
     private func applyGlobalRankingFailure(candidates: [Work], message: String) {
+        globalScoreFingerprint = nil
         aiRankedWorks = candidates
         totalCount = candidates.count
         aiScores = [:]

@@ -150,7 +150,7 @@ enum CandidatePoolSelector {
         decisions: [Int: AICandidateTriageOutput],
         profile: ResearchQuestionProfile?,
         limit: Int,
-        unclearReserve: Int = 30,
+        unclearReserve: Int = 90,
         backgroundReserve: Int = 12
     ) -> [Work] {
         guard limit > 0 else { return [] }

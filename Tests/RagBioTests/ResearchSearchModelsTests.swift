@@ -130,6 +130,52 @@ import Testing
         #expect(!selected.map(\.id).contains("mismatch"))
     }
 
+    @Test func defaultTriageReserveProtectsNinetyRecordsWithoutAbstracts() {
+        let likely = (0..<100).map {
+            makeWork(
+                id: "likely-\($0)",
+                title: "Direct target study \($0)",
+                abstract: "Direct target evidence."
+            )
+        }
+        let unclear = (0..<100).map {
+            makeWork(
+                id: "unclear-\($0)",
+                title: "Older potentially relevant study \($0)",
+                abstract: nil
+            )
+        }
+        let works = likely + unclear
+        let candidates = works.enumerated().map {
+            FusedCandidate(
+                work: $0.element,
+                discoveryScore: 1.0 / Double($0.offset + 1),
+                sources: [.pubMed],
+                firstSeenOrder: $0.offset
+            )
+        }
+        let decisions = Dictionary(uniqueKeysWithValues: works.indices.map { index in
+            (
+                index,
+                AICandidateTriageOutput(
+                    index: index,
+                    disposition: index < likely.count ? .likely : .explicitMismatch,
+                    directness: index < likely.count ? 3 : 0,
+                    confidence: .high
+                )
+            )
+        })
+
+        let selected = CandidatePoolSelector.select(
+            from: candidates,
+            decisions: decisions,
+            profile: .empty,
+            limit: 180
+        )
+
+        #expect(selected.filter { $0.id.hasPrefix("unclear-") }.count == 90)
+    }
+
     @Test func cheapDiscoveryPriorityPrefersDirectTrialOverBroadTopicReview() {
         let profile = ResearchQuestionProfile(
             questionType: .intervention,

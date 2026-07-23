@@ -34,7 +34,9 @@ struct AIQueryPlanner {
         - openalex_queries: 2-4 short English query strings: a broad high-recall lane, a \
         primary-study lane, and when supported a subgroup or outcome lane
         - pubmed_queries: 2-4 valid PubMed Boolean queries using MeSH plus [tiab] synonyms. \
-        Include broad and primary-study lanes; do not require comparator/outcome in every lane
+        Include broad and primary-study lanes. One broad lane must join only the two most \
+        indispensable concepts and must not require comparator, outcome, setting, study-design, \
+        or diagnostic/prognostic wording. Narrower lanes may add those concepts
         - clinical_trials_queries: 1-3 concise condition/intervention queries for \
         ClinicalTrials.gov, without PubMed field syntax
 
@@ -251,13 +253,12 @@ struct AIQueryPlanner {
         profile: ResearchQuestionProfile?,
         cards: [StructuredEvidenceCard],
         works: [Work],
-        localScores: [Int],
         configuration: AIProviderConfiguration
     ) async throws -> [AIGlobalScoreOutput] {
         guard configuration.isConfigured else {
             throw AIPlannerError.notConfigured(configuration.provider)
         }
-        guard cards.count == works.count, cards.count == localScores.count else {
+        guard cards.count == works.count else {
             throw AIPlannerError.invalidRanking
         }
         guard !cards.isEmpty else { return [] }
@@ -271,27 +272,43 @@ struct AIQueryPlanner {
             effect=\(card.reportsEffectEstimate) sample=\(card.reportsSampleSize) \
             control=\(card.hasComparatorGroup) followup=\(card.reportsFollowUp) \
             unique=\(card.uniqueContribution) confidence=\(card.confidence.rawValue) \
-            local=\(localScores[index]) family=\(card.studyFamilyID ?? "none")
+            family=\(card.studyFamilyID ?? "none")
             """
         }.joined(separator: "\n")
         let profileData = try JSONEncoder().encode(profile ?? .empty)
         let profileJSON = String(data: profileData, encoding: .utf8) ?? "{}"
         let prompt = """
-        Calibrate globally comparable relevance scores for every candidate for the original \
-        systematic-review question. Use one 0-100 rubric across the entire list. Unknown is not \
-        mismatch. Missing full text lowers confidence but must not lower relevance by itself. \
-        Follow-up, subgroup, safety, and registry reports can be useful. Citation count, venue \
-        prestige, and recency are not relevance factors. The outcome must be measured in the target \
-        population; an outcome reported only for parents or caregivers does not match a child \
-        outcome. A clear core population, intervention/exposure, or outcome-subject mismatch must \
-        score 0-4. Do not decide final meta-analysis eligibility.
+        Calibrate globally comparable usefulness scores for every candidate for writing the \
+        requested systematic review. This is not merely topical similarity. Use one 0-100 rubric \
+        across the entire list and use the full range instead of compressing many records near 100. \
+        Unknown is not mismatch. Missing full text lowers confidence but must not lower usefulness \
+        by itself. Citation count, venue prestige, and recency are not usefulness factors. The \
+        outcome must be measured in the target population; an outcome reported only for parents or \
+        caregivers does not match a child outcome. A clear core population, \
+        intervention/exposure, or outcome-subject mismatch must score 0-4. Do not decide final \
+        meta-analysis eligibility.
+
+        Prioritize evidence roles for systematic-review work:
+        - A direct primary results report matching the preferred study design should outrank a \
+          review, meta-analysis, guideline, protocol, registry record, or design paper about the \
+          same topic.
+        - Within the same study family, rank the primary results report first, then genuinely useful \
+          follow-up, subgroup, or safety reports. Registry and protocol records are discovery aids \
+          and must not outrank an available results report.
+        - Reviews, meta-analyses, and guidelines are useful background and citation-chasing sources, \
+          but must not receive a higher score than directly matching primary evidence merely because \
+          they summarize many trials.
+        - Follow-up, subgroup, and safety reports can remain highly useful when they contribute a \
+          requested outcome or otherwise unique evidence.
 
         Use these score anchors consistently:
-        - 90-100: direct evidence matching the target population, exposure/intervention, outcome, \
-          context, and requested evidence role
-        - 75-89: directly useful evidence with one non-core limitation or a somewhat broader age/context
-        - 50-74: partially matching, adjacent, follow-up, subgroup, or useful background evidence
-        - 20-49: weak or indirect usefulness requiring substantial interpretation
+        - 90-100: direct primary results evidence matching the target population, \
+          exposure/intervention, outcome, context, and preferred study design
+        - 75-89: likely useful primary evidence with one non-core limitation, or a directly useful \
+          follow-up, subgroup, or safety report
+        - 50-74: partially matching primary evidence or useful background/citation-chasing evidence
+        - 20-49: protocol, registry, design-only, weak, or indirect evidence when a results report is \
+          available, or background evidence requiring substantial interpretation
         - 5-19: minimal but identifiable usefulness
         - 0-4: clear core mismatch
 
